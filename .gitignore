@@ -1,0 +1,17 @@
+# Binaries
+fsbhoa_intrusion
+
+# Frigate
+media/
+storage/
+db/
+*.db
+*.mp4
+*.jpg
+
+# Asterisk
+*.call
+
+# OS
+.DS_Store
+Thumbs.db

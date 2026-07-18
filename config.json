@@ -1,0 +1,17 @@
+{
+  "min_updates": 3,
+  "required_triggers": 7,
+  "trigger_window_minutes": 5,
+  "proximity_threshold": 300,
+  "alert_window_start": "22:30",
+  "alert_window_end": "04:40",
+  "cooldown_minutes": 60,
+  "override_minutes": 60,
+  "listen_port": 8090,
+  "pbx_host": "192.168.40.100",
+  "pbx_user": "fsbhoa",
+  "pbx_extension": "701",
+  "caller_id": "16618730580",
+  "playback_audio": "custom/pool-intrusion-alert",
+  "mqtt_host": "127.0.0.1"
+}
