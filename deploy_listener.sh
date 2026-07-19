@@ -93,8 +93,9 @@ Listen 5001
 
     # WebSockets support for live video
     ProxyPreserveHost On
-    ProxyPass /ws/ ws://127.0.0.1:5000/ws/
-    ProxyPassReverse /ws/ ws://127.0.0.1:5000/ws/
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule /(.*)  ws://127.0.0.1:5000/$1 [P,L]
 
     ProxyPass / http://127.0.0.1:5000/
     ProxyPassReverse / http://127.0.0.1:5000/

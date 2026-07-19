@@ -8,6 +8,7 @@ db/
 *.db
 *.mp4
 *.jpg
+*.bak
 
 # Asterisk
 *.call

@@ -2,6 +2,7 @@
 <html>
 <head>
 	<title>FSBHOA Security Settings</title>
+	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<style>
 		body { font-family: Arial, sans-serif; margin: 0; background-color: #f4f4f9; height: 100vh; display: flex; flex-direction: column; }
@@ -30,12 +31,12 @@
 <body>
 	<!-- TOP NAVIGATION BAR -->
 	<div class="navbar">
-		<button class="tablinks active" onclick="openTab(event, 'Settings')">⚙️ Settings</button>
-		<button class="tablinks" onclick="openTab(event, 'Cameras')">📷 Live Cameras</button>
+		<button class="tablinks" onclick="openTab(event, 'Settings')">Settings</button>
+		<button class="tablinks active" onclick="openTab(event, 'Cameras')">Live Cameras</button>
 	</div>
 
 	<!-- TAB 1: SETTINGS -->
-	<div id="Settings" class="tab-content active">
+	<div id="Settings" class="tab-content">
 		<div class="settings-wrapper">
 			<div class="container">
 				<h2>Intrusion Alert Settings</h2>
@@ -45,57 +46,61 @@
 					
 					<label><b>Minimum Tracking Updates (Frames)</b></label>
 					<span class="hint">How long Frigate must continuously track an object before it counts as 1 trigger.</span>
-					<input type="number" name="min_updates" value="%d" required>
+					<input type="number" name="min_updates" value="{{.MinUpdates}}" required>
 
 					<label><b>Max Pixel Distance (Proximity)</b></label>
 					<span class="hint">Combine tracking gaps if the person moved less than this many pixels.</span>
-					<input type="number" name="proximity_threshold" value="%d" required>
+					<input type="number" name="proximity_threshold" value="{{.ProximityThreshold}}" required>
 
 					<label><b>Required Triggers</b></label>
 					<span class="hint">How many separate triggers are required before calling the PBX.</span>
-					<input type="number" name="required_triggers" value="%d" required>
+					<input type="number" name="required_triggers" value="{{.RequiredTriggers}}" required>
 
 					<label><b>Trigger Window (Minutes)</b></label>
 					<span class="hint">The required triggers must all occur within this rolling time window.</span>
-					<input type="number" name="trigger_window_minutes" value="%d" required>
+					<input type="number" name="trigger_window_minutes" value="{{.TriggerWindowMinutes}}" required>
 					
 					<label><b>Alert Window Start</b></label>
 					<span class="hint">e.g., 22:15 (10:15 PM)</span>
-					<input type="time" name="start_time" value="%s" required>
+					<input type="time" name="start_time" value="{{.AlertWindowStart}}" required>
 					
 					<label><b>Alert Window End</b></label>
 					<span class="hint">e.g., 05:00 (05:00 AM)</span>
-					<input type="time" name="end_time" value="%s" required>
+					<input type="time" name="end_time" value="{{.AlertWindowEnd}}" required>
 
 					<label><b>Alarm Cooldown (Minutes)</b></label>
 					<span class="hint">Wait this long before calling the staff about a new intrusion.</span>
-					<input type="number" name="cooldown_minutes" value="%d" required>
+					<input type="number" name="cooldown_minutes" value="{{.CooldownMinutes}}" required>
+
+					<label><b>Manual Override (Minutes)</b></label>
+					<span class="hint">Duration to pause alarms when an override is triggered via the PHP Portal.</span>
+					<input type="number" name="override_minutes" value="{{.OverrideMinutes}}" required>
 
 					<!-- PBX INTEGRATION -->
 					<h3>PBX Integration</h3>
 					<label><b>PBX Host IP</b></label>
-					<input type="text" name="pbx_host" value="%s" required>
+					<input type="text" name="pbx_host" value="{{.PBXHost}}" required>
 
 					<label><b>SSH Username</b></label>
-					<input type="text" name="pbx_user" value="%s" required>
+					<input type="text" name="pbx_user" value="{{.PBXUser}}" required>
 
 					<label><b>Alert Extension</b></label>
-					<input type="text" name="pbx_extension" value="%s" required>
+					<input type="text" name="pbx_extension" value="{{.PBXExtension}}" required>
 					
 					<label><b>Caller ID Number</b></label>
-					<input type="text" name="caller_id" value="%s" required>
+					<input type="text" name="caller_id" value="{{.CallerID}}" required>
 
 					<label><b>Playback Audio File</b></label>
-					<input type="text" name="playback_audio" value="%s" required>
+					<input type="text" name="playback_audio" value="{{.PlaybackAudio}}" required>
 
 					<!-- SYSTEM CONNECTIONS -->
 					<h3>System Connections</h3>
 					<label><b>MQTT Broker IP</b></label>
-					<input type="text" name="mqtt_host" value="%s" required>
+					<input type="text" name="mqtt_host" value="{{.MQTTHost}}" required>
 					
 					<label><b>Internal Listener Port</b></label>
 					<span class="hint">Hidden port (behind Apache). Usually 8091.</span>
-					<input type="number" name="listen_port" value="%d" min="1024" max="65535" required>
+					<input type="number" name="listen_port" value="{{.ListenPort}}" min="1024" max="65535" required>
 					
 					<input type="submit" value="Save Settings">
 				</form>
@@ -104,11 +109,19 @@
 	</div>
 
 	<!-- TAB 2: FRIGATE EMBED -->
-	<div id="Cameras" class="tab-content" style="height: 100%;">
+	<div id="Cameras" class="tab-content active" style="height: 100%; display: block;">
 		<iframe id="frigateFrame"></iframe>
+		<div id="logPanel" style="height: 25%; background: #1e1e1e; color: #00ff00; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 13px; line-height: 1.4; border-top: 4px solid #ccc;">Live System Logs will appear here...</div>
 	</div>
 
 	<script>
+		// Auto-load Frigate on page load since it is now the default tab
+		window.onload = function() {
+			const frigateIframe = document.getElementById('frigateFrame');
+			// Appending /birdseye tells Frigate to show cameras by priority
+			frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001/birdseye";
+		};
+
 		function openTab(evt, tabName) {
 			var i, tabcontent, tablinks;
 			tabcontent = document.getElementsByClassName("tab-content");
@@ -131,10 +144,29 @@
 				const frigateIframe = document.getElementById('frigateFrame');
 				if (!frigateIframe.src) {
 					// We point to 5001 so it hits the secure Apache reverse proxy!
-					frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001";
+					frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001/birdseye";
 				}
 			}
 		}
+				// Fetch and update logs every 2 seconds
+		setInterval(() => {
+			const targetTab = document.getElementById('Cameras');
+			if (targetTab.classList.contains('active')) {
+				fetch('/logs?t=' + new Date().getTime())
+					.then(response => response.json())
+					.then(lines => {
+						if (lines && Array.isArray(lines)) {
+							const logPanel = document.getElementById('logPanel');
+							const isScrolledToBottom = logPanel.scrollHeight - logPanel.clientHeight <= logPanel.scrollTop + 15;
+							logPanel.innerHTML = lines.map(l => l.trim()).join('<br>');
+							if (isScrolledToBottom) {
+								logPanel.scrollTop = logPanel.scrollHeight;
+							}
+						}
+					})
+					.catch(err => console.error("Error fetching logs:", err));
+			}
+		}, 2000);
 	</script>
 </body>
 </html>

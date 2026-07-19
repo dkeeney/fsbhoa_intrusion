@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"math"
 	"net/http"
@@ -20,6 +21,9 @@ import (
 //go:embed config.html
 var configHTML string
 
+// tmpl safely compiles our embedded HTML to prevent CSS formatting conflicts
+var tmpl = template.Must(template.New("config").Parse(configHTML))
+
 // AppConfig holds the adjustable thresholds
 type AppConfig struct {
 	MinUpdates           int    `json:"min_updates"`
@@ -29,6 +33,7 @@ type AppConfig struct {
 	AlertWindowStart     string `json:"alert_window_start"`
 	AlertWindowEnd       string `json:"alert_window_end"`
 	CooldownMinutes      int    `json:"cooldown_minutes"`
+	OverrideMinutes      int    `json:"override_minutes"`
 	ListenPort           int    `json:"listen_port"`
 	PBXHost              string `json:"pbx_host"`
 	PBXUser              string `json:"pbx_user"`
@@ -62,11 +67,31 @@ var (
 	objectStates   = make(map[string]*ObjectState)
 	recentTriggers []time.Time
 	lastCallTime   time.Time
+	overrideUntil  time.Time
 	mu             sync.Mutex
 	appConfig      AppConfig
+	logBuf         LogBuffer
 )
 
+// LogBuffer captures the last 50 log lines to display in the web UI
+type LogBuffer struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	lb.mu.Lock()
+	lb.lines = append(lb.lines, string(p))
+	if len(lb.lines) > 50 {
+		lb.lines = lb.lines[1:]
+	}
+	lb.mu.Unlock()
+	return os.Stdout.Write(p)
+}
+
 func main() {
+	log.SetOutput(&logBuf)
+
 	// Load configuration from file
 	configFile, err := os.ReadFile("config.json")
 	if err != nil {
@@ -79,7 +104,8 @@ func main() {
 			AlertWindowStart:     "22:15",
 			AlertWindowEnd:       "05:00",
 			CooldownMinutes:      60,
-			ListenPort:           8091, // Defaulting to 8091 so Apache can securely wrap 8090
+			OverrideMinutes:      60,
+			ListenPort:           8091,
 			PBXHost:              "192.168.40.100",
 			PBXUser:              "fsbhoa",
 			PBXExtension:         "701",
@@ -94,7 +120,34 @@ func main() {
 		}
 	}
 
+	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
+		logBuf.mu.Lock()
+		defer logBuf.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(logBuf.lines)
+	})
+
 	http.HandleFunc("/config", handleConfig)
+
+	http.HandleFunc("/pause", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		overrideUntil = time.Now().Add(time.Duration(appConfig.OverrideMinutes) * time.Minute)
+		mu.Unlock()
+		log.Printf("[OVERRIDE] Alarms paused via web request for %d minutes.", appConfig.OverrideMinutes)
+		w.Header().Set("Access-Control-Allow-Origin", "*") // In case access.fsbhoa.com calls via browser AJAX
+		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("15:04:05"))
+	})
+
+	http.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		overrideUntil = time.Time{}
+		mu.Unlock()
+		log.Printf("[OVERRIDE] Alarms resumed via web request.")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		fmt.Fprintf(w, "Alarms resumed and active.")
+	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -261,6 +314,12 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 	}
 
 	if isAlertTime {
+		if time.Now().Before(overrideUntil) {
+			log.Printf("[OVERRIDE] Threshold met on %s, but system is currently paused (Override active).", camera)
+			recentTriggers = nil
+			return
+		}
+
 		if time.Since(lastCallTime) < time.Duration(appConfig.CooldownMinutes)*time.Minute {
 			log.Printf("[THROTTLED] Threshold met on %s, but system is in a %d-minute cooldown period.", camera, appConfig.CooldownMinutes)
 			recentTriggers = nil
@@ -317,6 +376,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		appConfig.AlertWindowStart = r.FormValue("start_time")
 		appConfig.AlertWindowEnd = r.FormValue("end_time")
 		appConfig.CooldownMinutes, _ = strconv.Atoi(r.FormValue("cooldown_minutes"))
+		appConfig.OverrideMinutes, _ = strconv.Atoi(r.FormValue("override_minutes"))
 		appConfig.ListenPort, _ = strconv.Atoi(r.FormValue("listen_port"))
 		appConfig.PBXHost = r.FormValue("pbx_host")
 		appConfig.PBXUser = r.FormValue("pbx_user")
@@ -335,5 +395,9 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := appConfig
 	mu.Unlock()
 
-	fmt.Fprintf(w, configHTML, cfg.MinUpdates, cfg.ProximityThreshold, cfg.RequiredTriggers, cfg.TriggerWindowMinutes, cfg.AlertWindowStart, cfg.AlertWindowEnd, cfg.CooldownMinutes, cfg.PBXHost, cfg.PBXUser, cfg.PBXExtension, cfg.CallerID, cfg.PlaybackAudio, cfg.MQTTHost, cfg.ListenPort)
+	// Use HTML Templates to safely inject data without CSS breaking the syntax
+	w.Header().Set("Content-Type", "text/html")
+	if err := tmpl.Execute(w, cfg); err != nil {
+		log.Printf("Error rendering template: %v", err)
+	}
 }
