@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Pool Intrusion Alarm</title>
+	<title>FSBHOA Security Settings</title>
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<style>
 		body { font-family: Arial, sans-serif; margin: 0; background-color: #f4f4f9; height: 100vh; display: flex; flex-direction: column; }
@@ -25,100 +25,77 @@
 		input[type="submit"]:hover { background-color: #004494; }
 		h3 { margin-top: 25px; margin-bottom: 5px; color: #333; border-bottom: 1px solid #ccc; padding-bottom: 5px; }
 		.hint { font-size: 0.85em; color: #666; margin-bottom: 8px; display: block; }
-		
-		/* --- BUTTON STYLES --- */
-		.btn-danger { background-color: #dc3545; color: white; border: none; padding: 15px 20px; margin-top: 10px; margin-bottom: 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; }
-		.btn-danger:hover { background-color: #c82333; }
-		.btn-success { background-color: #28a745; color: white; border: none; padding: 15px 20px; margin-top: 10px; margin-bottom: 20px; border-radius: 4px; cursor: pointer; width: 100%; font-size: 16px; font-weight: bold; }
-		.btn-success:hover { background-color: #218838; }
-		.status-msg { margin-bottom: 15px; padding: 10px; border-radius: 4px; display: none; text-align: center; font-weight: bold; }
-		.status-msg.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; display: block; }
 	</style>
 </head>
 <body>
 	<!-- TOP NAVIGATION BAR -->
 	<div class="navbar">
-		<button class="tablinks" onclick="openTab(event, 'Settings')">⚙️ Settings & Override</button>
-		<button class="tablinks active" onclick="openTab(event, 'Cameras')">📷 Live Cameras</button>
+		<button class="tablinks active" onclick="openTab(event, 'Settings')">⚙️ Settings</button>
+		<button class="tablinks" onclick="openTab(event, 'Cameras')">📷 Live Cameras</button>
 	</div>
 
 	<!-- TAB 1: SETTINGS -->
-	<div id="Settings" class="tab-content">
+	<div id="Settings" class="tab-content active">
 		<div class="settings-wrapper">
 			<div class="container">
-				<h2>Pool Intrusion Alarm</h2>
-				
-				<div id="statusBox" class="status-msg"></div>
-				
-				<h3>Quick Actions</h3>
-				
-				<!-- DYNAMIC BUTTON LOADED BY GO TEMPLATE -->
-				{{if .ActiveOverride}}
-					<button id="overrideBtn" class="btn-success" onclick="cancelOverride()">Re-enable Alarms Now (Ends at {{.OverrideTimeStr}})</button>
-				{{else}}
-					<button id="overrideBtn" class="btn-danger" onclick="activateOverride()">Disable Alarms Now (Staff Override)</button>
-				{{end}}
-
+				<h2>Intrusion Alert Settings</h2>
 				<form method="POST">
 					<!-- DETECTION RULES -->
 					<h3>Detection Rules</h3>
 					
 					<label><b>Minimum Tracking Updates (Frames)</b></label>
 					<span class="hint">How long Frigate must continuously track an object before it counts as 1 trigger.</span>
-					<input type="number" name="min_updates" value="{{.Config.MinUpdates}}" required>
+					<input type="number" name="min_updates" value="%d" required>
 
 					<label><b>Max Pixel Distance (Proximity)</b></label>
 					<span class="hint">Combine tracking gaps if the person moved less than this many pixels.</span>
-					<input type="number" name="proximity_threshold" value="{{.Config.ProximityThreshold}}" required>
+					<input type="number" name="proximity_threshold" value="%d" required>
 
 					<label><b>Required Triggers</b></label>
 					<span class="hint">How many separate triggers are required before calling the PBX.</span>
-					<input type="number" name="required_triggers" value="{{.Config.RequiredTriggers}}" required>
+					<input type="number" name="required_triggers" value="%d" required>
 
 					<label><b>Trigger Window (Minutes)</b></label>
 					<span class="hint">The required triggers must all occur within this rolling time window.</span>
-					<input type="number" name="trigger_window_minutes" value="{{.Config.TriggerWindowMinutes}}" required>
+					<input type="number" name="trigger_window_minutes" value="%d" required>
 					
 					<label><b>Alert Window Start</b></label>
 					<span class="hint">e.g., 22:15 (10:15 PM)</span>
-					<input type="time" name="start_time" value="{{.Config.AlertWindowStart}}" required>
+					<input type="time" name="start_time" value="%s" required>
 					
 					<label><b>Alert Window End</b></label>
 					<span class="hint">e.g., 05:00 (05:00 AM)</span>
-					<input type="time" name="end_time" value="{{.Config.AlertWindowEnd}}" required>
+					<input type="time" name="end_time" value="%s" required>
 
 					<label><b>Alarm Cooldown (Minutes)</b></label>
 					<span class="hint">Wait this long before calling the staff about a new intrusion.</span>
-					<input type="number" name="cooldown_minutes" value="{{.Config.CooldownMinutes}}" required>
-					
-					<label><b>External Override (Minutes)</b></label>
-					<span class="hint">How long to pause alarms when the Staff Override button is clicked, or when a pool gate is accessed.</span>
-					<input type="number" name="override_minutes" value="{{.Config.OverrideMinutes}}" required>
+					<input type="number" name="cooldown_minutes" value="%d" required>
 
 					<!-- PBX INTEGRATION -->
 					<h3>PBX Integration</h3>
 					<label><b>PBX Host IP</b></label>
-					<input type="text" name="pbx_host" value="{{.Config.PBXHost}}" required>
+					<input type="text" name="pbx_host" value="%s" required>
 
 					<label><b>SSH Username</b></label>
-					<input type="text" name="pbx_user" value="{{.Config.PBXUser}}" required>
+					<input type="text" name="pbx_user" value="%s" required>
 
 					<label><b>Alert Extension</b></label>
-					<input type="text" name="pbx_extension" value="{{.Config.PBXExtension}}" required>
+					<input type="text" name="pbx_extension" value="%s" required>
 					
 					<label><b>Caller ID Number</b></label>
-					<input type="text" name="caller_id" value="{{.Config.CallerID}}" required>
+					<input type="text" name="caller_id" value="%s" required>
 
 					<label><b>Playback Audio File</b></label>
-					<input type="text" name="playback_audio" value="{{.Config.PlaybackAudio}}" required>
+					<input type="text" name="playback_audio" value="%s" required>
 
 					<!-- SYSTEM CONNECTIONS -->
 					<h3>System Connections</h3>
 					<label><b>MQTT Broker IP</b></label>
-					<input type="text" name="mqtt_host" value="{{.Config.MQTTHost}}" required>
+					<input type="text" name="mqtt_host" value="%s" required>
 					
-					<label><b>Listener Port</b></label>
-					<input type="number" name="listen_port" value="{{.Config.ListenPort}}" min="1024" max="65535" required>
+					<label><b>Internal Listener Port</b></label>
+					<span class="hint">Hidden port (behind Apache). Usually 8091.</span>
+					<input type="number" name="listen_port" value="%d" min="1024" max="65535" required>
 					
 					<input type="submit" value="Save Settings">
 				</form>
@@ -127,19 +104,11 @@
 	</div>
 
 	<!-- TAB 2: FRIGATE EMBED -->
-	<div id="Cameras" class="tab-content active" style="display: block; height: 100%;">
-		<!-- We will inject the src dynamically via JS so it always uses the correct IP -->
+	<div id="Cameras" class="tab-content" style="height: 100%;">
 		<iframe id="frigateFrame"></iframe>
 	</div>
 
 	<script>
-		// --- INITIALIZE IFRAME ON LOAD ---
-		window.onload = function() {
-			const frigateIframe = document.getElementById('frigateFrame');
-			frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5000";
-		};
-
-		// --- TAB LOGIC ---
 		function openTab(evt, tabName) {
 			var i, tabcontent, tablinks;
 			tabcontent = document.getElementsByClassName("tab-content");
@@ -157,54 +126,14 @@
 			targetTab.classList.add("active");
 			evt.currentTarget.className += " active";
 
-			// Dynamically load Frigate UI on port 5000 using the current hostname/IP
+			// Only load the iframe when the Cameras tab is clicked
 			if (tabName === 'Cameras') {
 				const frigateIframe = document.getElementById('frigateFrame');
 				if (!frigateIframe.src) {
-					frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5000";
+					// We point to 5001 so it hits the secure Apache reverse proxy!
+					frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001";
 				}
 			}
-		}
-
-		// --- OVERRIDE BUTTON LOGIC ---
-		function activateOverride() {
-			fetch('/override')
-				.then(response => response.text())
-				.then(data => {
-					const statusBox = document.getElementById('statusBox');
-					statusBox.innerText = '✅ ' + data;
-					statusBox.className = 'status-msg success';
-					
-					const btn = document.getElementById('overrideBtn');
-					btn.className = 'btn-success';
-					btn.innerText = 'Re-enable Alarms Now';
-					btn.onclick = cancelOverride;
-					
-					setTimeout(() => {
-						statusBox.className = 'status-msg';
-					}, 8000);
-				})
-				.catch(err => console.error('Override failed:', err));
-		}
-
-		function cancelOverride() {
-			fetch('/resume')
-				.then(response => response.text())
-				.then(data => {
-					const statusBox = document.getElementById('statusBox');
-					statusBox.innerText = '✅ ' + data;
-					statusBox.className = 'status-msg success';
-					
-					const btn = document.getElementById('overrideBtn');
-					btn.className = 'btn-danger';
-					btn.innerText = 'Disable Alarms Now (Staff Override)';
-					btn.onclick = activateOverride;
-					
-					setTimeout(() => {
-						statusBox.className = 'status-msg';
-					}, 8000);
-				})
-				.catch(err => console.error('Resume failed:', err));
 		}
 	</script>
 </body>

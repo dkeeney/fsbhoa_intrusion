@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"log"
 	"math"
 	"net/http"
@@ -26,11 +25,10 @@ type AppConfig struct {
 	MinUpdates           int    `json:"min_updates"`
 	RequiredTriggers     int    `json:"required_triggers"`
 	TriggerWindowMinutes int    `json:"trigger_window_minutes"`
-	ProximityThreshold   int    `json:"proximity_threshold"` // Max pixels an object can move between dropped frames
+	ProximityThreshold   int    `json:"proximity_threshold"`
 	AlertWindowStart     string `json:"alert_window_start"`
 	AlertWindowEnd       string `json:"alert_window_end"`
 	CooldownMinutes      int    `json:"cooldown_minutes"`
-	OverrideMinutes      int    `json:"override_minutes"`
 	ListenPort           int    `json:"listen_port"`
 	PBXHost              string `json:"pbx_host"`
 	PBXUser              string `json:"pbx_user"`
@@ -48,7 +46,7 @@ type FrigateEvent struct {
 		Label    string    `json:"label"`
 		Camera   string    `json:"camera"`
 		TopScore float64   `json:"top_score"`
-		Box      []float64 `json:"box"` // [ymin, xmin, ymax, xmax]
+		Box      []float64 `json:"box"`
 	} `json:"after"`
 }
 
@@ -64,7 +62,6 @@ var (
 	objectStates   = make(map[string]*ObjectState)
 	recentTriggers []time.Time
 	lastCallTime   time.Time
-	overrideUntil  time.Time
 	mu             sync.Mutex
 	appConfig      AppConfig
 )
@@ -78,12 +75,11 @@ func main() {
 			MinUpdates:           3,
 			RequiredTriggers:     6,
 			TriggerWindowMinutes: 10,
-			ProximityThreshold:   300, // 300 pixels is roughly 15% of a 1080p screen
+			ProximityThreshold:   300,
 			AlertWindowStart:     "22:15",
 			AlertWindowEnd:       "05:00",
 			CooldownMinutes:      60,
-			OverrideMinutes:      60,
-			ListenPort:           8090,
+			ListenPort:           8091, // Defaulting to 8091 so Apache can securely wrap 8090
 			PBXHost:              "192.168.40.100",
 			PBXUser:              "fsbhoa",
 			PBXExtension:         "701",
@@ -99,26 +95,6 @@ func main() {
 	}
 
 	http.HandleFunc("/config", handleConfig)
-
-	http.HandleFunc("/override", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		mins := appConfig.OverrideMinutes
-		overrideUntil = time.Now().Add(time.Duration(mins) * time.Minute)
-		recentTriggers = nil // Clear any pending triggers so they don't fire right after override
-		mu.Unlock()
-
-		log.Printf("[OVERRIDE] Manual override activated. Alarms paused for %d minutes.", mins)
-		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("03:04 PM"))
-	})
-
-	http.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		overrideUntil = time.Time{}
-		mu.Unlock()
-
-		log.Printf("[OVERRIDE] Manual override cancelled. Alarms re-enabled.")
-		fmt.Fprintf(w, "Alarms re-enabled.")
-	})
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -170,7 +146,6 @@ func processFrigateEvent(event FrigateEvent) {
 		return
 	}
 
-	// We ignore END events completely and rely on our own time/distance math
 	if event.Type == "end" {
 		return
 	}
@@ -180,7 +155,6 @@ func processFrigateEvent(event FrigateEvent) {
 
 	now := time.Now()
 
-	// Periodically clean up old objects from memory
 	for id, s := range objectStates {
 		if now.Sub(s.LastSeen) > 10*time.Second {
 			delete(objectStates, id)
@@ -198,23 +172,19 @@ func processFrigateEvent(event FrigateEvent) {
 	state, exists := objectStates[objID]
 
 	if exists {
-		// Standard continuation of an existing Frigate ID
 		state.HitCount++
 		state.LastX = centerX
 		state.LastY = centerY
 		state.LastSeen = now
 	} else {
-		// Frigate assigned a NEW ID. Let's see if we can bridge it to an orphaned track based on proximity!
 		bridged := false
 		for oldID, oldState := range objectStates {
 			timeSinceLastSeen := now.Sub(oldState.LastSeen)
 
-			// Is it orphaned? (Not updated in 100ms, but still within 2 seconds)
 			if timeSinceLastSeen > 100*time.Millisecond && timeSinceLastSeen <= 2*time.Second {
 				dist := math.Sqrt(math.Pow(centerX-oldState.LastX, 2) + math.Pow(centerY-oldState.LastY, 2))
 
 				if dist <= float64(appConfig.ProximityThreshold) {
-					// It's a match! Inherit the state.
 					state = &ObjectState{
 						HitCount: oldState.HitCount + 1,
 						LastX:    centerX,
@@ -231,7 +201,6 @@ func processFrigateEvent(event FrigateEvent) {
 		}
 
 		if !bridged {
-			// Truly a new person
 			state = &ObjectState{
 				HitCount: 1,
 				LastX:    centerX,
@@ -242,14 +211,10 @@ func processFrigateEvent(event FrigateEvent) {
 		}
 	}
 
-	// TRIGGER LOGIC
 	if state.HitCount >= appConfig.MinUpdates {
-		// Reset the hit count so this person can generate another trigger if they stay in the pool
 		state.HitCount = 0
-
 		recentTriggers = append(recentTriggers, now)
 
-		// Prune triggers that are older than the allowed window
 		cutoff := now.Add(-time.Duration(appConfig.TriggerWindowMinutes) * time.Minute)
 		var validTriggers []time.Time
 		for _, t := range recentTriggers {
@@ -268,15 +233,8 @@ func processFrigateEvent(event FrigateEvent) {
 }
 
 func evaluateAlarmAndCall(camera string, now time.Time) {
-	// 1. Check if the manual override is active
-	if now.Before(overrideUntil) {
-		log.Printf("[THROTTLED] Threshold met on %s, but manual override is active until %s.", camera, overrideUntil.Format("03:04 PM"))
-		recentTriggers = nil
-		return
-	}
-
-	// 2. Check if we are inside the active Time Window
 	currentMins := now.Hour()*60 + now.Minute()
+
 	startParts := strings.Split(appConfig.AlertWindowStart, ":")
 	endParts := strings.Split(appConfig.AlertWindowEnd, ":")
 
@@ -302,7 +260,6 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 		}
 	}
 
-	// 3. Dispatch call or throttle
 	if isAlertTime {
 		if time.Since(lastCallTime) < time.Duration(appConfig.CooldownMinutes)*time.Minute {
 			log.Printf("[THROTTLED] Threshold met on %s, but system is in a %d-minute cooldown period.", camera, appConfig.CooldownMinutes)
@@ -360,7 +317,6 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		appConfig.AlertWindowStart = r.FormValue("start_time")
 		appConfig.AlertWindowEnd = r.FormValue("end_time")
 		appConfig.CooldownMinutes, _ = strconv.Atoi(r.FormValue("cooldown_minutes"))
-		appConfig.OverrideMinutes, _ = strconv.Atoi(r.FormValue("override_minutes"))
 		appConfig.ListenPort, _ = strconv.Atoi(r.FormValue("listen_port"))
 		appConfig.PBXHost = r.FormValue("pbx_host")
 		appConfig.PBXUser = r.FormValue("pbx_user")
@@ -376,22 +332,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mu.Lock()
-	data := struct {
-		Config          AppConfig
-		ActiveOverride  bool
-		OverrideTimeStr string
-	}{
-		Config:          appConfig,
-		ActiveOverride:  overrideUntil.After(time.Now()),
-		OverrideTimeStr: overrideUntil.Format("03:04 PM"),
-	}
+	cfg := appConfig
 	mu.Unlock()
 
-	tmpl, err := template.New("config").Parse(configHTML)
-	if err != nil {
-		http.Error(w, "Failed to load template", http.StatusInternalServerError)
-		return
-	}
-
-	tmpl.Execute(w, data)
+	fmt.Fprintf(w, configHTML, cfg.MinUpdates, cfg.ProximityThreshold, cfg.RequiredTriggers, cfg.TriggerWindowMinutes, cfg.AlertWindowStart, cfg.AlertWindowEnd, cfg.CooldownMinutes, cfg.PBXHost, cfg.PBXUser, cfg.PBXExtension, cfg.CallerID, cfg.PlaybackAudio, cfg.MQTTHost, cfg.ListenPort)
 }
