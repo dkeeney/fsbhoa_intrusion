@@ -1,7 +1,8 @@
 {
+  "silent_mode": true,
   "min_updates": 3,
-  "required_triggers": 7,
-  "trigger_window_minutes": 5,
+  "required_triggers": 5,
+  "trigger_window_minutes": 3,
   "proximity_threshold": 300,
   "alert_window_start": "22:30",
   "alert_window_end": "04:40",

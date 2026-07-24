@@ -26,6 +26,7 @@ var tmpl = template.Must(template.New("config").Parse(configHTML))
 
 // AppConfig holds the adjustable thresholds
 type AppConfig struct {
+	SilentMode           bool   `json:"silent_mode"`
 	MinUpdates           int    `json:"min_updates"`
 	RequiredTriggers     int    `json:"required_triggers"`
 	TriggerWindowMinutes int    `json:"trigger_window_minutes"`
@@ -63,6 +64,22 @@ type ObjectState struct {
 	LastY    float64
 }
 
+// LogBuffer captures the last 5000 log lines to display in the web UI
+type LogBuffer struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	lb.mu.Lock()
+	lb.lines = append(lb.lines, string(p))
+	if len(lb.lines) > 5000 {
+		lb.lines = lb.lines[1:]
+	}
+	lb.mu.Unlock()
+	return os.Stdout.Write(p)
+}
+
 var (
 	objectStates   = make(map[string]*ObjectState)
 	recentTriggers []time.Time
@@ -73,22 +90,6 @@ var (
 	logBuf         LogBuffer
 )
 
-// LogBuffer captures the last 50 log lines to display in the web UI
-type LogBuffer struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (lb *LogBuffer) Write(p []byte) (n int, err error) {
-	lb.mu.Lock()
-	lb.lines = append(lb.lines, string(p))
-	if len(lb.lines) > 50 {
-		lb.lines = lb.lines[1:]
-	}
-	lb.mu.Unlock()
-	return os.Stdout.Write(p)
-}
-
 func main() {
 	log.SetOutput(&logBuf)
 
@@ -97,6 +98,7 @@ func main() {
 	if err != nil {
 		log.Println("config.json not found, creating default configuration...")
 		appConfig = AppConfig{
+			SilentMode:           true, // Defaulting to true to save your sleep!
 			MinUpdates:           3,
 			RequiredTriggers:     6,
 			TriggerWindowMinutes: 10,
@@ -120,6 +122,22 @@ func main() {
 		}
 	}
 
+	http.HandleFunc("/config", handleConfig)
+
+	http.HandleFunc("/toggle-silent", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		appConfig.SilentMode = !appConfig.SilentMode
+		saveConfig()
+		isSilent := appConfig.SilentMode
+		mu.Unlock()
+
+		log.Printf("[SILENT MODE] Toggled via Web UI. SilentMode is now: %v", isSilent)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		json.NewEncoder(w).Encode(map[string]bool{"silent_mode": isSilent})
+	})
+
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		logBuf.mu.Lock()
 		defer logBuf.mu.Unlock()
@@ -129,14 +147,12 @@ func main() {
 		json.NewEncoder(w).Encode(logBuf.lines)
 	})
 
-	http.HandleFunc("/config", handleConfig)
-
 	http.HandleFunc("/pause", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		overrideUntil = time.Now().Add(time.Duration(appConfig.OverrideMinutes) * time.Minute)
 		mu.Unlock()
 		log.Printf("[OVERRIDE] Alarms paused via web request for %d minutes.", appConfig.OverrideMinutes)
-		w.Header().Set("Access-Control-Allow-Origin", "*") // In case access.fsbhoa.com calls via browser AJAX
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("15:04:05"))
 	})
 
@@ -315,13 +331,21 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 
 	if isAlertTime {
 		if time.Now().Before(overrideUntil) {
-			log.Printf("[OVERRIDE] Threshold met on %s, but system is currently paused (Override active).", camera)
+			log.Printf("[OVERRIDE] Threshold met on %s, but system is currently paused.", camera)
 			recentTriggers = nil
 			return
 		}
 
 		if time.Since(lastCallTime) < time.Duration(appConfig.CooldownMinutes)*time.Minute {
 			log.Printf("[THROTTLED] Threshold met on %s, but system is in a %d-minute cooldown period.", camera, appConfig.CooldownMinutes)
+			recentTriggers = nil
+			return
+		}
+
+		// SILENT MODE CHECK
+		if appConfig.SilentMode {
+			log.Printf("[SILENT MODE] Threshold met (%d triggers) on %s! Would have called PBX, but system is muted.", appConfig.RequiredTriggers, camera)
+			lastCallTime = time.Now()
 			recentTriggers = nil
 			return
 		}
@@ -395,7 +419,6 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := appConfig
 	mu.Unlock()
 
-	// Use HTML Templates to safely inject data without CSS breaking the syntax
 	w.Header().Set("Content-Type", "text/html")
 	if err := tmpl.Execute(w, cfg); err != nil {
 		log.Printf("Error rendering template: %v", err)

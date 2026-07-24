@@ -10,7 +10,7 @@ if [ "$STATE" != "ON" ] && [ "$STATE" != "OFF" ]; then
     exit 1
 fi
 
-CAMERAS=("pool_from_cabana" "Pool_SW" "jacuzzi" "Pool_NE")
+CAMERAS=("pool_from_cabana" "Pool_SW" "jacuzzi" "Pool_NE" "Pool_farside")
 
 for CAM in "${CAMERAS[@]}"; do
     mosquitto_pub -h "$MQTT_HOST" -t "frigate/${CAM}/record/set" -m "$STATE"

@@ -7,13 +7,17 @@ record:
 
   alerts:
     retain:
-      days: 14
+      days: 3
       mode: active_objects
   detections:
     retain:
-      days: 14
+      days: 3
       mode: active_objects
-
+snapshots:
+  enabled: true
+  bounding_box: true
+  retain:
+    default: 3
 motion:
   threshold: 15
   contour_area: 15
@@ -33,6 +37,7 @@ detectors:
 
 cameras:
   pool_from_cabana:
+    enabled: true
     ffmpeg:
       inputs:
         - path: rtsp://admin:1234@192.168.78.51:9008/profile1
@@ -42,22 +47,17 @@ cameras:
     detect:
       width: 1920
       height: 1080
-      fps: 5
+      fps: 1
 
     objects:
       filters:
         person:
           mask:
-            - 0.883,0.452,0.694,0.43,0.673,0.347,0.875,0.306
-            - 0.866,0.321,0.866,0.262,0.848,0.258,0.845,0.32
-            - 0.914,0.247,0.918,0.213,0.902,0.21,0.899,0.254
-            - 0.133,0.263,0.128,0.202,0.108,0.199,0.112,0.279
-      mask:
-        - 0.868,0.628,0.786,0.636,0.789,0.47,0.854,0.466
-        - 0.358,0.642,0.154,0.688,0.158,0.276,0.343,0.364
-        - 0.147,0.045,0.992,0.07,0.994,0.157,0.147,0.151
+            - 0.332,0.381,0.336,0.523,0.37,0.526,0.365,0.374
+            - 0.011,0.414,0.119,0.44,0.178,0.633,0.124,0.798,0.012,0.807
     motion: {}
   Pool_SW:
+    enabled: false
     ffmpeg:
       inputs:
         - path: 
@@ -67,9 +67,10 @@ cameras:
     detect:
       width: 2592
       height: 1944
-      fps: 5
+      fps: 1
 
   jacuzzi:
+    enabled: true
     ffmpeg:
       inputs:
         - path: rtsp://admin:1234@192.168.78.19:9008/profile1
@@ -79,13 +80,16 @@ cameras:
     detect:
       width: 1920
       height: 1080
-      fps: 5
+      fps: 1
 
     objects:
       filters:
         person:
-          mask: 0.134,0.505,0.354,0.616,0.34,0.783,0.124,0.747
+          mask: 
+            0.06,0.474,0.226,0.478,0.336,0.586,0.396,0.77,0.309,0.941,0.071,0.904
+      mask: 0.925,0.928,0.597,0.958,0.612,0.618,0.767,0.515,0.959,0.506
   Pool_NE:
+    enabled: false
     ffmpeg:
       inputs:
         - path: 
@@ -95,7 +99,36 @@ cameras:
     detect:
       width: 2592
       height: 1944
-      fps: 5
+      fps: 1
 
+  Pool_farside:
+    enabled: true
+    ffmpeg:
+      inputs:
+        # High resolution stream for recording (H.264)
+        - path: 
+            rtsp://admin:bakersfield123@192.168.78.63:554/h264Preview_01_main
+          roles:
+            - record
+        # Low resolution stream for AI detection (H.264)
+        - path: rtsp://admin:bakersfield123@192.168.78.63:554/h264Preview_01_sub
+          roles:
+            - detect
+    detect:
+      width: 640
+      height: 360
+      fps: 1
+    objects:
+      filters:
+        person:
+          min_area: 300  # Starts by ignoring anything smaller than this.
+          max_area: 2000 # Nothing larger than this.
+
+          mask:
+            - 0.154,0.258,0.154,0.066,0.199,0.067,0.207,0.265
+            - 0.602,0.223,0.603,0.069,0.645,0.076,0.643,0.223
+            - 0.79,0.115,0.981,0.118,0.988,0.301,0.782,0.289
+            - 0.041,0.14,0.075,0.145,0.084,0.282,0.047,0.282
+            - 0.721,0.125,0.721,0.261,0.755,0.268,0.755,0.127
 version: 0.17-0
 
