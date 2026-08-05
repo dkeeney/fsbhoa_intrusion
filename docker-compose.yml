@@ -7,6 +7,8 @@ services:
       - "1883:1883"
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - frigate_net
   frigate:
     container_name: frigate
     privileged: true 
@@ -18,6 +20,8 @@ services:
       options:
         max-size: "10m" # Max file size before rotating
         max-file: "3"   # Keep only 3 historical files
+    devices:
+      - /dev/dri:/dev/dri
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - ./frigate.yml:/config/config.yml
@@ -26,9 +30,16 @@ services:
         target: /tmp/cache
         tmpfs:
           size: 1000000000
+    networks:
+      - frigate_net
     ports:
       - "8971:8971"
       - "5000:5000"
       - "8554:8554"
       - "8555:8555/tcp"
       - "8555:8555/udp"
+    environment:
+      FRIGATE_RTSP_PASSWORD: "password"
+networks:
+  frigate_net:
+    driver: bridge

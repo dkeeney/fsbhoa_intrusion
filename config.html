@@ -63,12 +63,14 @@
 	<div class="navbar">
 		<button class="tablinks tabbtn" onclick="openTab(event, 'Settings')">⚙️ Settings</button>
 		
-		<!-- PROMINENT SILENT MODE SWITCH -->
-		<button id="navSilentBtn" class="silent-toggle-btn {{if .SilentMode}}muted{{else}}active-sound{{end}}" onclick="toggleSilentMode()">
-			{{if .SilentMode}}🔕 SILENT MODE (Calls Muted){{else}}🔔 ALARM ACTIVE (Calls ON){{end}}
-		</button>
-
-		<button class="tablinks tabbtn active" onclick="openTab(event, 'Cameras')">📷 Live Cameras</button>
+                <!-- PROMINENT SILENT MODE SWITCH & WEATHER STATUS -->
+                <div style="display: flex; align-items: center; margin: 0 10px;">
+                    <button id="navSilentBtn" class="silent-toggle-btn {{if .SilentMode}}muted{{else}}active-sound{{end}}" onclick="toggleSilentMode()">
+                        {{if .SilentMode}}🔕 SILENT MODE (Calls Muted){{else}}🔔 ALARM ACTIVE (Calls ON){{end}}
+                    </button>
+                    <span id="weatherStatus" style="color: white; font-weight: bold; margin-left: 15px; font-size: 14px;">Checking weather...</span>
+                </div>
+		<button class="tablinks tabbtn active" onclick="openTab(event, 'Cameras')">📷 Cameras</button>
 	</div>
 
 	<!-- TAB 1: SETTINGS -->
@@ -81,27 +83,27 @@
 					<h3>Detection Rules</h3>
 
 					<label><b>Minimum Tracking Updates (Frames)</b></label>
-					<span class="hint">How long Frigate must continuously track an object before it counts as 1 trigger.</span>
+					<span class="hint">How long Frigate must continuously track an object before it counts as 1 trigger.  Usually 4.</span>
 					<input type="number" name="min_updates" value="{{.MinUpdates}}" required>
 
 					<label><b>Max Pixel Distance (Proximity)</b></label>
-					<span class="hint">Combine tracking gaps if the person moved less than this many pixels.</span>
+					<span class="hint">Combine tracking gaps if the person moved less than this many pixels. Usually 300</span>
 					<input type="number" name="proximity_threshold" value="{{.ProximityThreshold}}" required>
 
 					<label><b>Required Triggers</b></label>
-					<span class="hint">How many separate triggers are required before calling the PBX.</span>
+					<span class="hint">How many separate triggers are required before calling the PBX. Usually 10</span>
 					<input type="number" name="required_triggers" value="{{.RequiredTriggers}}" required>
 
 					<label><b>Trigger Window (Minutes)</b></label>
-					<span class="hint">The required triggers must all occur within this rolling time window.</span>
+					<span class="hint">The required triggers must all occur within this rolling time window. Usually 3</span>
 					<input type="number" name="trigger_window_minutes" value="{{.TriggerWindowMinutes}}" required>
 					
 					<label><b>Alert Window Start</b></label>
-					<span class="hint">e.g., 22:15 (10:15 PM)</span>
+					<span class="hint">e.g., 10:15 PM, after lights go off.</span>
 					<input type="time" name="start_time" value="{{.AlertWindowStart}}" required>
 					
 					<label><b>Alert Window End</b></label>
-					<span class="hint">e.g., 05:00 (05:00 AM)</span>
+					<span class="hint">e.g., 05:00 AM before lights come on</span>
 					<input type="time" name="end_time" value="{{.AlertWindowEnd}}" required>
 
 					<label><b>Alarm Cooldown (Minutes)</b></label>
@@ -127,6 +129,7 @@
 					<input type="text" name="caller_id" value="{{.CallerID}}" required>
 
 					<label><b>Playback Audio File</b></label>
+					<span class="hint">Usually 'custom/pool_alarm'</span>
 					<input type="text" name="playback_audio" value="{{.PlaybackAudio}}" required>
 
 					<!-- SYSTEM CONNECTIONS -->
@@ -137,9 +140,27 @@
 					<label><b>Internal Listener Port</b></label>
 					<span class="hint">Hidden port (behind Apache). Usually 8091.</span>
 					<input type="number" name="listen_port" value="{{.ListenPort}}" min="1024" max="65535" required>
+
+					<div style="margin-bottom: 15px;">
+                                            <label>Weather Underground Station ID:</label><br>
+                                            <input type="text" name="wu_station_id" value="{{.WUStationID}}" style="width: 200px;">
+                                            <span class="hint">Hopefully a station in our community. <a href="https://www.wunderground.com/wundermap" target="_blank">WunderMap</a></span>
+                                        </div>
+                                        <div style="margin-bottom: 15px;">
+                                            <label>Wind Gust Threshold (mph):</label><br>
+                                            <span class="hint">Disables alarm for wind speed higher than this value.</span>
+                                            <input type="number" name="wind_threshold" value="{{.WindThreshold}}" step="0.1" style="width: 100px;">
+                                        </div>
 					
 					<input type="submit" value="Save Settings">
 				</form>
+				<!-- Test PBX Alarm Button -->
+                                <div style="margin-top: 20px;">
+                                    <button type="button" id="testAlarmBtn" style="padding: 10px 15px; background-color: #d9534f; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer;">
+                                        🚨 Test PBX Alarm
+                                    </button>
+                                    <span id="testResult" style="margin-left: 10px; color: #5bc0de; font-weight: bold;"></span>
+                                </div>
 			</div>
 		</div>
 	</div>
@@ -193,15 +214,15 @@
 		}
 
 		function updateSilentBtnUI(isSilent) {
-			const btn = document.getElementById('navSilentBtn');
-			if (isSilent) {
-				btn.className = 'silent-toggle-btn muted';
-				btn.innerHTML = '🔕 SILENT MODE (Calls Muted)';
-			} else {
-				btn.className = 'silent-toggle-btn active-sound';
-				btn.innerHTML = '🔔 ALARM ACTIVE (Calls ON)';
-			}
-		}
+                        const btn = document.getElementById('navSilentBtn');
+                        if (isSilent) {
+                            btn.className = 'silent-toggle-btn muted';
+                            btn.innerHTML = '🔕 SILENT MODE (Calls Muted)';
+                        } else {
+                            btn.className = 'silent-toggle-btn active-sound';
+                            btn.innerHTML = '🔔 ALARM ACTIVE (Calls ON)';
+                        }
+                }
 
 		// Fetch and update live logs every 2 seconds
 		setInterval(() => {
@@ -222,6 +243,54 @@
 					.catch(err => console.error("Error fetching logs:", err));
 			}
 		}, 2000);
+
+
+		<!-- Test Alarm Button -->
+		document.getElementById('testAlarmBtn').addEventListener('click', function() {
+                const btn = this;
+                const resultSpan = document.getElementById('testResult');
+            
+                // Visual feedback that it's working
+                btn.disabled = true;
+                btn.style.backgroundColor = '#999';
+                resultSpan.textContent = "Sending...";
+            
+                fetch('/test-alarm', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        resultSpan.textContent = "✅ " + data.message;
+                        setTimeout(() => { resultSpan.textContent = ""; }, 3000);
+                    })
+                    .catch(error => {
+                        resultSpan.textContent = "❌ Error triggering test";
+                        resultSpan.style.color = "red";
+                    })
+                    .finally(() => {
+                        btn.disabled = false;
+                        btn.style.backgroundColor = '#d9534f';
+                    });
+                });
+
+		// --- LIVE WEATHER POLLING ---
+                function fetchWeatherStatus() {
+                    fetch('/weather-status')
+                        .then(response => response.json())
+                        .then(data => {
+                            const statusSpan = document.getElementById('weatherStatus');
+                            if (data.isStormy) {
+                                statusSpan.innerHTML = "🌧️ WEATHER AUTO-MUTE: " + data.reason;
+                                statusSpan.style.color = "#ff6b6b"; // Bright red for dark navbar
+                            } else {
+                                statusSpan.innerHTML = "☀️ Weather Clear (Auto-Mute Inactive)";
+                                statusSpan.style.color = "#5cb85c"; // Green for dark navbar
+                            }
+                        })
+                        .catch(err => console.error("Error fetching weather:", err));
+                }
+
+                // Fetch immediately on load, then every 60 seconds
+                fetchWeatherStatus();
+                setInterval(fetchWeatherStatus, 60000);
 	</script>
 </body>
 </html>

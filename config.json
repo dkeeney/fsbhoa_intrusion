@@ -1,7 +1,7 @@
 {
   "silent_mode": true,
-  "min_updates": 3,
-  "required_triggers": 5,
+  "min_updates": 4,
+  "required_triggers": 10,
   "trigger_window_minutes": 3,
   "proximity_threshold": 300,
   "alert_window_start": "22:30",
@@ -13,6 +13,8 @@
   "pbx_user": "fsbhoa",
   "pbx_extension": "701",
   "caller_id": "16618730580",
-  "playback_audio": "custom/pool-intrusion-alert",
-  "mqtt_host": "127.0.0.1"
+  "playback_audio": "custom/pool_alarm",
+  "mqtt_host": "127.0.0.1",
+  "wu_station_id": "KCABAKER235",
+  "wind_threshold": 15
 }

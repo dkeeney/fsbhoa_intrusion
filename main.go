@@ -21,6 +21,22 @@ import (
 //go:embed config.html
 var configHTML string
 
+// Global weather state
+var (
+	isStormy      bool
+	weatherReason string
+	weatherMutex  sync.RWMutex
+)
+// WUResponse matches the Weather Underground JSON structure
+type WUResponse struct {
+	Observations []struct {
+		Imperial struct {
+			WindGust   float64 `json:"windGust"`
+			PrecipRate float64 `json:"precipRate"` // Inches per hour currently falling
+		} `json:"imperial"`
+	} `json:"observations"`
+}
+
 // tmpl safely compiles our embedded HTML to prevent CSS formatting conflicts
 var tmpl = template.Must(template.New("config").Parse(configHTML))
 
@@ -42,6 +58,8 @@ type AppConfig struct {
 	CallerID             string `json:"caller_id"`
 	PlaybackAudio        string `json:"playback_audio"`
 	MQTTHost             string `json:"mqtt_host"`
+	WUStationID          string  `json:"wu_station_id"`
+	WindThreshold        float64 `json:"wind_threshold"`
 }
 
 // FrigateEvent represents the incoming JSON payload from Frigate over MQTT
@@ -52,16 +70,20 @@ type FrigateEvent struct {
 		Label    string    `json:"label"`
 		Camera   string    `json:"camera"`
 		TopScore float64   `json:"top_score"`
+		Area     float64   `json:"area"`
 		Box      []float64 `json:"box"`
 	} `json:"after"`
 }
 
 // ObjectState tracks the last known physical position of a person
 type ObjectState struct {
-	HitCount int
-	LastSeen time.Time
-	LastX    float64
-	LastY    float64
+	SampleCount int       // Length of the track from Frigate
+	TotalConf   float64   // Sum of all confidence scores
+	HitsAwarded int       // How many trigger hits this track has generated
+	LastSeen    time.Time
+	LastX       float64
+	LastY       float64
+	StartTime   time.Time // To calculate total duration
 }
 
 // LogBuffer captures the last 5000 log lines to display in the web UI
@@ -78,6 +100,84 @@ func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 	}
 	lb.mu.Unlock()
 	return os.Stdout.Write(p)
+}
+
+// Dynamic score cache for Frigate API integration
+var (
+	cameraMinScores = make(map[string]float64)
+	globalMinScore  = 0.4 // Safe fallback if API is unreachable
+)
+
+func init() {
+	// Runs in the background on startup to prevent blocking or race conditions
+	go func() {
+		for {
+			if loadFrigateConfigOnce() {
+				log.Printf("[CONFIG] Successfully synchronized min_scores from Frigate API.")
+				return
+			}
+			log.Printf("[CONFIG] Frigate API not ready yet. Retrying config sync in 5 seconds...")
+			time.Sleep(5 * time.Second)
+		}
+	}()
+}
+
+func loadFrigateConfigOnce() bool {
+	client := http.Client {
+		Timeout: 3 * time.Second,
+	}
+	resp, err := client.Get("http://127.0.0.1:5000/api/config")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	var raw map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return false
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// 1. Extract global min_score for person
+	if objs, ok := raw["objects"].(map[string]any); ok {
+		if filters, ok := objs["filters"].(map[string]any); ok {
+			if person, ok := filters["person"].(map[string]any); ok {
+				if ms, ok := person["min_score"].(float64); ok {
+					globalMinScore = ms
+				}
+			}
+		}
+	}
+
+	// 2. Extract per-camera min_score overrides
+	if cams, ok := raw["cameras"].(map[string]any); ok {
+		for camName, camData := range cams {
+			if camMap, ok := camData.(map[string]any); ok {
+				if objs, ok := camMap["objects"].(map[string]any); ok {
+					if filters, ok := objs["filters"].(map[string]any); ok {
+						if person, ok := filters["person"].(map[string]any); ok {
+							if ms, ok := person["min_score"].(float64); ok { // Fixed type
+								cameraMinScores[camName] = ms
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	log.Printf("[CONFIG] Loaded Frigate min_scores. Global: %.2f, Per-Camera overrides: %v", globalMinScore, cameraMinScores)
+	return true
+}
+
+func getMinScoreForCamera(camera string) float64 {
+	mu.Lock()
+	defer mu.Unlock()
+	if score, exists := cameraMinScores[camera]; exists {
+		return score
+	}
+	return globalMinScore
 }
 
 var (
@@ -114,6 +214,8 @@ func main() {
 			CallerID:             "16618730580",
 			PlaybackAudio:        "custom/pool-intrusion-alert",
 			MQTTHost:             "127.0.0.1",
+			WUStationID:          "KCABAKER235",
+			WindThreshold:        15.0,
 		}
 		saveConfig()
 	} else {
@@ -156,6 +258,16 @@ func main() {
 		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("15:04:05"))
 	})
 
+	http.HandleFunc("/override", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		// Set the override to exactly 10 years in the future to make it permanent
+		overrideUntil = time.Now().AddDate(10, 0, 0) 
+		mu.Unlock()
+		log.Printf("[OVERRIDE] Alarms disabled PERMANENTLY via web request.")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		fmt.Fprintf(w, "Alarms permanently disabled until a /resume command is received.")
+	})
+
 	http.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		overrideUntil = time.Time{}
@@ -165,6 +277,34 @@ func main() {
 		fmt.Fprintf(w, "Alarms resumed and active.")
 	})
 
+	http.HandleFunc("/test-alarm", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		log.Printf("[TEST] Manual PBX test triggered via web UI.")
+
+		// Call the exact same function the real alarm uses, passing a dummy camera name
+		go triggerPBXCall("Web_Test_Button")
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		fmt.Fprintf(w, `{"status": "success", "message": "PBX call sent to spool!"}`)
+	})
+
+	http.HandleFunc("/weather-status", func(w http.ResponseWriter, r *http.Request) {
+               weatherMutex.RLock()
+               status := map[string]interface{}{
+                   "isStormy": isStormy,
+                   "reason":   weatherReason,
+               }
+               weatherMutex.RUnlock()
+
+               w.Header().Set("Content-Type", "application/json")
+               json.NewEncoder(w).Encode(status)
+        })
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
 			http.Redirect(w, r, "/config", http.StatusSeeOther)
@@ -173,8 +313,10 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+
 	log.Printf("Loaded Config: Min Updates=%d, Requires %d triggers in %d mins", appConfig.MinUpdates, appConfig.RequiredTriggers, appConfig.TriggerWindowMinutes)
 
+	go monitorWeather()
 	go startMQTTListener()
 
 	log.Printf("Starting FSBHOA Configuration Portal on port %d...", appConfig.ListenPort)
@@ -189,16 +331,35 @@ func startMQTTListener() {
 	opts.AddBroker(fmt.Sprintf("tcp://%s:1883", appConfig.MQTTHost))
 	opts.SetClientID("pbx-listener-service")
 
-	opts.OnConnect = func(client mqtt.Client) {
-		log.Printf("Connected to MQTT Broker at %s. Subscribing to frigate/events...", appConfig.MQTTHost)
-		client.Subscribe("frigate/events", 0, func(client mqtt.Client, msg mqtt.Message) {
-			var event FrigateEvent
-			if err := json.Unmarshal(msg.Payload(), &event); err == nil {
-				processFrigateEvent(event)
-			}
-		})
-	}
+	// Enable automatic reconnection and connection monitoring
+	opts.SetAutoReconnect(true)
+	opts.SetConnectRetry(true)
+	opts.SetConnectRetryInterval(5 * time.Second)
 
+	opts.OnConnect = func(client mqtt.Client) {
+		topic := "frigate/events"
+		log.Printf("Connected to MQTT Broker at %s. Subscribing to %s", appConfig.MQTTHost, topic)
+		if token := client.Subscribe(topic, 1, func(client mqtt.Client, msg mqtt.Message) {
+			// RAW DEBUG: This prints the exact second an MQTT message arrives,
+			// regardless of whether it's valid JSON or not.
+			//log.Printf("DEBUG MQTT RECEIVED -> Topic: %s | Size: %d bytes", msg.Topic(), len(msg.Payload()))
+
+			var event FrigateEvent
+			if err := json.Unmarshal(msg.Payload(), &event); err != nil {
+				// Log the error so we can see if malformed data comes through
+				log.Printf("JSON unmarshal error: %v | Payload: %s", err, string(msg.Payload()))
+				return
+			}
+			processFrigateEvent(event)
+		}); token.Wait() && token.Error() != nil {
+			log.Printf("Subscription failed: %v", token.Error())
+		}
+	}
+	opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
+		log.Printf("[MQTT ERROR] Connection lost: %v. Attempting to reconnect...", err)
+	})
+
+	// Initial connection attempt
 	client := mqtt.NewClient(opts)
 	for {
 		if token := client.Connect(); token.Wait() && token.Error() != nil {
@@ -211,12 +372,32 @@ func startMQTTListener() {
 }
 
 func processFrigateEvent(event FrigateEvent) {
+	// TRACE: Print out what the event actually contains
+	//log.Printf("[EVENT TRACE] Camera: %s | Label: %s | Score: %.2f",
+	//	event.After.Camera, event.After.Label, event.After.TopScore)
+
 	if event.After.Label != "person" {
 		return
 	}
 
 	if event.Type == "end" {
+		mu.Lock()
+		// Print a clean summary of the track before deleting it
+		if state, exists := objectStates[event.After.ID]; exists {
+			duration := time.Since(state.StartTime).Round(time.Second)
+			avgConf := state.TotalConf / float64(state.SampleCount)
+			log.Printf("[TRACK END] %s track on %s ended | Duration: %s | Samples: %d | Avg Conf: %.2f | Hits Generated: %d",
+				event.After.Label, event.After.Camera, duration, state.SampleCount, avgConf, state.HitsAwarded)
+			delete(objectStates, event.After.ID)
+		}
+		mu.Unlock()
 		return
+	}
+
+	minScore := getMinScoreForCamera(event.After.Camera)
+	conf := event.After.TopScore
+	if conf < minScore {
+		conf = minScore
 	}
 
 	mu.Lock()
@@ -225,23 +406,30 @@ func processFrigateEvent(event FrigateEvent) {
 	now := time.Now()
 
 	for id, s := range objectStates {
-		if now.Sub(s.LastSeen) > 10*time.Second {
+		if now.Sub(s.LastSeen) > 60*time.Second {
 			delete(objectStates, id)
 		}
 	}
 
-	var centerX, centerY float64
+	var centerX, centerY, width, height float64
 	if len(event.After.Box) == 4 {
 		ymin, xmin, ymax, xmax := event.After.Box[0], event.After.Box[1], event.After.Box[2], event.After.Box[3]
 		centerX = xmin + (xmax-xmin)/2.0
 		centerY = ymin + (ymax-ymin)/2.0
+		width = xmax - xmin
+		height = ymax - ymin
 	}
+	// === DATA GATHERING TELEMETRY ===
+	log.Printf("[TELEMETRY] Cam: %s | ID: %s | Conf: %.2f | Area: %.0f | WxH: %.0fx%.0f | Center: %.0f,%.0f",
+		event.After.Camera, event.After.ID, conf, event.After.Area, 
+		width, height, centerX, centerY)
 
 	objID := event.After.ID
 	state, exists := objectStates[objID]
 
 	if exists {
-		state.HitCount++
+		state.SampleCount++
+		state.TotalConf += conf
 		state.LastX = centerX
 		state.LastY = centerY
 		state.LastSeen = now
@@ -250,20 +438,24 @@ func processFrigateEvent(event FrigateEvent) {
 		for oldID, oldState := range objectStates {
 			timeSinceLastSeen := now.Sub(oldState.LastSeen)
 
-			if timeSinceLastSeen > 100*time.Millisecond && timeSinceLastSeen <= 2*time.Second {
+			if timeSinceLastSeen > 100*time.Millisecond && timeSinceLastSeen <= 3*time.Second {
 				dist := math.Sqrt(math.Pow(centerX-oldState.LastX, 2) + math.Pow(centerY-oldState.LastY, 2))
 
 				if dist <= float64(appConfig.ProximityThreshold) {
 					state = &ObjectState{
-						HitCount: oldState.HitCount + 1,
-						LastX:    centerX,
-						LastY:    centerY,
-						LastSeen: now,
+						SampleCount: oldState.SampleCount + 1,
+						TotalConf:   oldState.TotalConf + conf,
+						HitsAwarded: oldState.HitsAwarded,
+						LastX:       centerX,
+						LastY:       centerY,
+						LastSeen:    now,
+						StartTime:   oldState.StartTime,
 					}
+		                        log.Printf("[BRIDGED] Active track on %s to %s", 
+					    oldID, objID)
 					objectStates[objID] = state
 					delete(objectStates, oldID)
 					bridged = true
-					log.Printf("[BRIDGE] Merged ID due to proximity. Distance: %.0fpx. Current frames: %d", dist, state.HitCount)
 					break
 				}
 			}
@@ -271,18 +463,31 @@ func processFrigateEvent(event FrigateEvent) {
 
 		if !bridged {
 			state = &ObjectState{
-				HitCount: 1,
-				LastX:    centerX,
-				LastY:    centerY,
-				LastSeen: now,
+				SampleCount: 1,
+				TotalConf:   conf,
+				HitsAwarded: 0,
+				LastX:       centerX,
+				LastY:       centerY,
+				LastSeen:    now,
+				StartTime:   now,
 			}
 			objectStates[objID] = state
 		}
 	}
 
-	if state.HitCount >= appConfig.MinUpdates {
-		state.HitCount = 0
-		recentTriggers = append(recentTriggers, now)
+	// === METRICS EVALUATION ===
+	// Length (SampleCount) and Confidence (TotalConf) work together.
+	// For every block of "MinUpdates" worth of confidence accumulated, award 1 hit.
+	earnedHits := int(state.TotalConf / float64(appConfig.MinUpdates))
+
+	// If this track grew long/confident enough to earn a new hit...
+	if earnedHits > state.HitsAwarded {
+		newHits := earnedHits - state.HitsAwarded
+		state.HitsAwarded = earnedHits
+
+		for i := 0; i < newHits; i++ {
+			recentTriggers = append(recentTriggers, now)
+		}
 
 		cutoff := now.Add(-time.Duration(appConfig.TriggerWindowMinutes) * time.Minute)
 		var validTriggers []time.Time
@@ -293,7 +498,8 @@ func processFrigateEvent(event FrigateEvent) {
 		}
 		recentTriggers = validTriggers
 
-		log.Printf("[TRACKING] Solid track verified on %s. Trigger count: %d of %d within %d mins.", event.After.Camera, len(recentTriggers), appConfig.RequiredTriggers, appConfig.TriggerWindowMinutes)
+		log.Printf("[TRACKING] Active track on %s earned %d hit(s). Current Trigger count: %d of %d within %d mins.",
+			event.After.Camera, newHits, len(recentTriggers), appConfig.RequiredTriggers, appConfig.TriggerWindowMinutes)
 
 		if len(recentTriggers) >= appConfig.RequiredTriggers {
 			evaluateAlarmAndCall(event.After.Camera, now)
@@ -365,10 +571,13 @@ func triggerPBXCall(camera string) {
 	log.Printf("Initiating PBX call to extension %s via %s@%s...", appConfig.PBXExtension, appConfig.PBXUser, appConfig.PBXHost)
 
 	callFileContents := fmt.Sprintf(
-		"Channel: Local/%s@from-internal\nCallerID: \"Pool Alarm\" <%s>\nMaxRetries: 2\nRetryTime: 60\nWaitTime: 30\nApplication: Playback\nData: silence/1&%s\n",
+		"Channel: Local/%s@from-internal\nCallerID: \"Pool Alarm\" <%s>\nMaxRetries: 2\nRetryTime: 60\nWaitTime: 30\nApplication: Playback\nData: silence/2&%s&silence/2&%s&silence/2&%s&silence/2&%s\n",
 		appConfig.PBXExtension,
 		appConfig.CallerID,
-		appConfig.PlaybackAudio,
+		appConfig.PlaybackAudio, // Plays 1st time
+		appConfig.PlaybackAudio, // Plays 2nd time
+		appConfig.PlaybackAudio, // Plays 3rd time
+		appConfig.PlaybackAudio, // Plays 4th time
 	)
 
 	sshCommand := fmt.Sprintf("echo '%s' > /tmp/pool_alarm.call && sudo chown asterisk:asterisk /tmp/pool_alarm.call && sudo mv /tmp/pool_alarm.call /var/spool/asterisk/outgoing/", callFileContents)
@@ -407,6 +616,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		appConfig.PBXExtension = r.FormValue("pbx_extension")
 		appConfig.CallerID = r.FormValue("caller_id")
 		appConfig.PlaybackAudio = r.FormValue("playback_audio")
+		appConfig.WUStationID = r.FormValue("wu_station_id")
+                appConfig.WindThreshold, _ = strconv.ParseFloat(r.FormValue("wind_threshold"), 64)
 		appConfig.MQTTHost = r.FormValue("mqtt_host")
 		saveConfig()
 		mu.Unlock()
@@ -424,3 +635,56 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error rendering template: %v", err)
 	}
 }
+func monitorWeather() {
+	apiKey := "e1f10a1e78da46f5b10a1e78da96f525" // Standard WU public frontend key
+
+	for {
+		// 1. Safely lock and read the latest settings from memory on every loop!
+		mu.Lock()
+		stationID := appConfig.WUStationID
+		threshold := appConfig.WindThreshold
+		mu.Unlock()
+
+		if stationID == "" {
+			stationID = "KCABAKER235" // Fallback just in case
+		}
+		if threshold <= 0 {
+			threshold = 15.0 // Safe fallback so 0 doesn't mute alarms forever
+		}
+
+		// 2. Build the URL dynamically with the latest station ID
+		url := fmt.Sprintf("https://api.weather.com/v2/pws/observations/current?stationId=%s&format=json&units=e&apiKey=%s", stationID, apiKey)
+
+		resp, err := http.Get(url)
+		if err == nil {
+			var wu WUResponse
+			if err := json.NewDecoder(resp.Body).Decode(&wu); err == nil && len(wu.Observations) > 0 {
+				obs := wu.Observations[0].Imperial
+				stormy := false
+				reason := ""
+
+				if obs.WindGust > threshold {
+					stormy = true
+					reason = fmt.Sprintf("High Winds (%.1f mph gust)", obs.WindGust)
+				} else if obs.PrecipRate > 0.0 {
+					stormy = true
+					reason = fmt.Sprintf("Active Rain (%.2f in/hr)", obs.PrecipRate)
+				}
+
+				// Safely update the global state
+				weatherMutex.Lock()
+				isStormy = stormy
+				weatherReason = reason
+				weatherMutex.Unlock()
+			}
+			resp.Body.Close()
+		} else {
+			log.Printf("[WEATHER] Error fetching weather data: %v", err)
+		}
+
+		// Polling every 10 minutes keeps us well under any rate limits
+		time.Sleep(10 * time.Minute)
+	}
+}
+
+
