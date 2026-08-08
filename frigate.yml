@@ -56,8 +56,6 @@ cameras:
         - path: rtsp://admin:1234@192.168.78.51:9008/profile1
           roles:
             - detect
-        - path: rtsp://admin:1234@192.168.78.51:9008/profile0
-          roles:
             - record
     detect:
       enabled: true
@@ -100,9 +98,7 @@ cameras:
         - path: rtsp://admin:1234@192.168.78.19:9008/profile1
           roles:
             - detect
-        - path: rtsp://admin:1234@192.168.78.19:9008/profile0
-          roles:
-            - record
+            - record 
     detect:
       enabled: true
       width: 1920
