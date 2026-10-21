@@ -1,0 +1,22 @@
+{
+  "silent_mode": true,
+  "min_updates": 3,
+  "required_triggers": 6,
+  "trigger_window_minutes": 10,
+  "proximity_threshold": 300,
+  "alert_window_start": "22:15",
+  "alert_window_end": "05:00",
+  "cooldown_minutes": 60,
+  "override_minutes": 60,
+  "listen_port": 8091,
+  "pbx_host": "192.168.40.100",
+  "pbx_user": "fsbhoa",
+  "pbx_extension": "701",
+  "caller_id": "16618730580",
+  "playback_audio": "custom/pool-intrusion-alert",
+  "mqtt_host": "127.0.0.1",
+  "wu_station_id": "KCABAKER235",
+  "wu_api_key": "",
+  "nws_station_id": "KBFL",
+  "wind_threshold": 15
+}

@@ -20,7 +20,7 @@ The stack has four components:
 | `https://alarm.fsbhoa.com:8090/config` | Alarm settings, silent-mode toggle, pause/resume, and live logs (proxied to the Go listener on port 8091) |
 | `https://alarm.fsbhoa.com:5001` | Frigate UI, live video, and recordings (proxied to Frigate on port 5000) |
 
-Settings saved in the portal are written to `config.json` in the repository directory.
+Settings saved in the portal are written to `config.json` in the repository directory. `config.json` is not tracked by git because it holds the Weather Underground API key. `config.example.json` has the default settings; if `config.json` is missing, the listener creates it with those defaults.
 
 ## Weather Lockout
 
@@ -43,7 +43,7 @@ The top bar of the config portal shows the current weather state and which sourc
 .
 ├── main.go               Go listener: MQTT consumer, alert logic, PBX dialer, web portal
 ├── config.html           Web portal template (embedded into the binary)
-├── config.json           Runtime settings (edited through the web portal)
+├── config.example.json   Default settings (copy to config.json)
 ├── docker-compose.yml    Frigate + Mosquitto containers
 ├── frigate.yml           Frigate configuration: cameras, detection, masks
 ├── mosquitto.conf        MQTT broker configuration

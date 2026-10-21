@@ -20,7 +20,7 @@ docker compose restart frigate    # pick up frigate.yml edits
 ./set_recordings.sh ON|OFF        # toggle Frigate recording on all cameras via mosquitto_pub
 ```
 
-The binary reads and writes `config.json` in its **working directory**, so run it from the repo root. If the file is missing it writes defaults (hard-coded in `main()`).
+The binary reads and writes `config.json` in its **working directory**, so run it from the repo root. If the file is missing it writes defaults (hard-coded in `main()`). `config.json` is gitignored (it holds the WU API key); `config.example.json` mirrors the `main()` defaults, so keep the two in sync when adding a field.
 
 ## Architecture
 
