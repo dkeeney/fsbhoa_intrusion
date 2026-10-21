@@ -26,7 +26,7 @@ echo " FSBHOA Pool Alarm Deployment (${DOMAIN})"
 echo "========================================="
 
 # 1. Start Frigate and Mosquitto
-echo "[1/6] Starting Frigate and Mosquitto containers..."
+echo "[1/5] Starting Frigate and Mosquitto containers..."
 if ! command -v docker &> /dev/null; then
     echo "Docker is not installed! Please install Docker first."
     exit 1
@@ -41,7 +41,7 @@ docker compose up -d
 echo "✓ Containers running."
 
 # 2. Compile the Go application and setup Systemd service
-echo "[2/6] Compiling Go application..."
+echo "[2/5] Compiling Go application..."
 if ! command -v go &> /dev/null; then
     echo "Go is not installed! Please install Go first: sudo apt install golang-go"
     exit 1
@@ -51,7 +51,7 @@ chmod +x build.sh
 echo "✓ Go Application compiled and service configured."
 
 # 3. Handle SSH Keys for PBX Access
-echo "[3/6] Checking SSH keys for PBX authentication..."
+echo "[3/5] Checking SSH keys for PBX authentication..."
 if [ ! -f ~/.ssh/id_rsa ]; then
     echo "No SSH key found. Generating one now..."
     ssh-keygen -t rsa -b 4096 -N "" -f ~/.ssh/id_rsa
@@ -60,26 +60,10 @@ else
     echo "✓ SSH key already exists."
 fi
 
-# 4. Setup Cron Jobs for Recording Schedule
-echo "[4/6] Setting up automated recording schedule in crontab..."
-if ! command -v mosquitto_pub &> /dev/null; then
-    echo "Installing mosquitto-clients (needed by set_recordings.sh)..."
-    sudo apt-get update && sudo apt-get install -y mosquitto-clients
-fi
-chmod +x "$APP_DIR/set_recordings.sh"
-NEW_CRON=$(mktemp)
-# Keep existing entries except our own, to avoid duplicates
-crontab -l 2>/dev/null | grep -v "set_recordings.sh" > "$NEW_CRON" || true
-echo "0 22 * * * $APP_DIR/set_recordings.sh ON" >> "$NEW_CRON"
-echo "0 5 * * * $APP_DIR/set_recordings.sh OFF" >> "$NEW_CRON"
-crontab "$NEW_CRON"
-rm "$NEW_CRON"
-echo "✓ Cron jobs installed (ON at 22:00, OFF at 05:00)."
-
-# 5. Configure Apache Reverse Proxy
+# 4. Configure Apache Reverse Proxy
 #    https://alarm.fsbhoa.com:8090 -> Go config portal (127.0.0.1:8091)
 #    https://alarm.fsbhoa.com:5001 -> Frigate UI with websockets (127.0.0.1:5000)
-echo "[5/6] Configuring Apache reverse proxy for HTTPS..."
+echo "[4/5] Configuring Apache reverse proxy for HTTPS..."
 if ! command -v apache2 &> /dev/null; then
     echo "Installing Apache2..."
     sudo apt-get update && sudo apt-get install -y apache2
@@ -136,12 +120,12 @@ sudo apache2ctl configtest
 sudo systemctl reload apache2
 echo "✓ Apache reloaded."
 
-# 6. Final Instructions
+# 5. Final Instructions
 echo "========================================="
 echo "Deployment Complete!"
 echo "Listener logs: sudo journalctl -u fsbhoa_intrusion.service -f"
 echo ""
-echo "[6/6] ONE-TIME MANUAL STEP (skip if already done):"
+echo "[5/5] ONE-TIME MANUAL STEP (skip if already done):"
 echo "Copy the SSH key to the PBX so the listener can place calls without a password."
 echo "It will ask for the PBX password one last time:"
 echo ""

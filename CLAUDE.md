@@ -12,12 +12,11 @@ After-hours intrusion detection for the FSBHOA pool. Frigate NVR runs AI person 
 go build -o fsbhoa_intrusion      # build only
 go vet ./...                      # static checks (there are no tests in the repo)
 ./build.sh                        # build + create/enable/restart the systemd service (uses sudo)
-./deploy_listener.sh              # full deploy for alarm.fsbhoa.com (containers, service, SSH key, cron, Apache vhosts); idempotent
+./deploy_listener.sh              # full deploy for alarm.fsbhoa.com (containers, service, SSH key, Apache vhosts); idempotent
 sudo journalctl -u fsbhoa_intrusion.service -f   # live service logs
 
 docker compose up -d              # start Mosquitto (1883) + Frigate (UI 5000/8971, RTSP 8554, WebRTC 8555)
 docker compose restart frigate    # pick up frigate.yml edits
-./set_recordings.sh ON|OFF        # toggle Frigate recording on all cameras via mosquitto_pub
 ```
 
 The binary reads and writes `config.json` in its **working directory**, so run it from the repo root. If the file is missing it writes defaults (hard-coded in `main()`). `config.json` is gitignored (it holds the WU API key); `config.example.json` mirrors the `main()` defaults, so keep the two in sync when adding a field.
@@ -39,7 +38,7 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 - HTTP (port `listen_port`, default 8091, served via Apache HTTPS on 8090 in production): `/config` (GET renders the form, POST saves every field), `/toggle-silent`, `/pause` (for `override_minutes`), `/override` (pause indefinitely), `/resume`, `/test-alarm` (POST, places a real PBX call), `/weather-status`, `/logs` (JSON of the last 5000 log lines, captured by `LogBuffer` as the `log` output, with 12-hour timestamps). `/logs` filters by `log_filter_mode` (0 all, 1 triggers and alarms, 2 alarms only) using hard-coded tag lists such as `[TRACKING]` and `[WEATHER]`; a new log tag that should stay visible must be added to those lists.
 - `config.html` is compiled into the binary with `//go:embed` and rendered with `html/template`. Rebuild after editing it. When adding a config field, update the `AppConfig` struct, the defaults in `main()`, the POST handler in `handleConfig`, and the form in `config.html` together.
 
-**Frigate (`frigate.yml`):** uses the OpenVINO detector on the Intel GPU (`/dev/dri`); talks to the `mosquitto` container by name on the `frigate_net` Docker network. Mounted as `/config/config.yml`; recordings go to `./storage` (gitignored). Camera names here must match the `CAMERAS` list in `set_recordings.sh`. Detection masks are normalized polygons per camera. The Speco O2VLB5 cameras (.19 `jacuzzi`, .51 `pool_from_cabana`, RTSP port 9008) offer only `profile1` 1080p, `profile2` 704×480 and `profile3` 352×240; there is no `profile0`. Ask a camera over ONVIF (`GetProfiles`/`GetStreamUri` on `/onvif/Media`) before guessing stream paths.
+**Frigate (`frigate.yml`):** uses the OpenVINO detector on the Intel GPU (`/dev/dri`); talks to the `mosquitto` container by name on the `frigate_net` Docker network. Mounted as `/config/config.yml`; recordings go to `./storage` (gitignored). Detection masks are normalized polygons per camera. The Speco O2VLB5 cameras (.19 `jacuzzi`, .51 `pool_from_cabana`, RTSP port 9008) offer only `profile1` 1080p, `profile2` 704×480 and `profile3` 352×240; there is no `profile0`. Ask a camera over ONVIF (`GetProfiles`/`GetStreamUri` on `/onvif/Media`) before guessing stream paths.
 
 ## Production (alarm.fsbhoa.com)
 
@@ -51,8 +50,8 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 
 ## Gotchas / known inconsistencies
 
-- Production runs on **alarm.fsbhoa.com** and is already deployed. Do not run `deploy_listener.sh` or `build.sh` unless asked: they modify systemd, crontab, and Apache. This dev machine (`testbed`) has its own Apache site for testbed.fsbhoa.com.
-- `set_recordings.sh` publishes to `frigate/<camera>/recordings/set` on `127.0.0.1` (override with `MQTT_HOST=`), so run it on the alarm server; its `CAMERAS` list must match `frigate.yml`. It is not in cron on production. Frigate reaches the broker as `mosquitto`, and the Go service uses `mqtt_host` from `config.json`.
+- Production runs on **alarm.fsbhoa.com** and is already deployed. Do not run `deploy_listener.sh` or `build.sh` unless asked: they modify systemd, Docker, and Apache. This dev machine (`testbed`) has its own Apache site for testbed.fsbhoa.com.
+- All cameras record 24 hours a day by design (alerts kept 14 days, motion 3 days). A night-only `set_recordings.sh` cron script was removed on 2026-10-21; it had never worked. Frigate reaches the MQTT broker as `mosquitto`, and the Go service uses `mqtt_host` from `config.json`.
 - Before changing code, `git fetch`: production commits directly to GitHub `main`, so local `main` may be behind.
 - `main.go` is not `gofmt`-clean; avoid reformatting unrelated lines in a fix.
 - Mosquitto allows anonymous connections (`mosquitto.conf`).

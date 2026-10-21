@@ -49,8 +49,7 @@ The top bar of the config portal shows the current weather state and which sourc
 ├── .env.example          Camera passwords template (copy to .env; not in git)
 ├── mosquitto.conf        MQTT broker configuration
 ├── build.sh              Builds the listener and installs/restarts its systemd service
-├── deploy_listener.sh    Full server deployment for alarm.fsbhoa.com
-└── set_recordings.sh     Turns Frigate recording ON/OFF for all cameras (run by cron)
+└── deploy_listener.sh    Full server deployment for alarm.fsbhoa.com
 ```
 
 ## Deployment
@@ -68,8 +67,7 @@ cd fsbhoa_intrusion
 1. Starts the Frigate and Mosquitto containers (`docker compose up -d`).
 2. Builds the Go listener and installs it as the `fsbhoa_intrusion` systemd service (`build.sh`).
 3. Creates an SSH key for PBX access if one doesn't already exist.
-4. Installs cron jobs that turn recording ON at 22:00 and OFF at 05:00 (`set_recordings.sh`).
-5. Sets up the Apache HTTPS proxy on ports 8090 and 5001 (`/etc/apache2/sites-available/alarm.fsbhoa.com-pool.conf`).
+4. Sets up the Apache HTTPS proxy on ports 8090 and 5001 (`/etc/apache2/sites-available/alarm.fsbhoa.com-pool.conf`).
 
 One manual step is needed the first time: copy the SSH key to the PBX.
 
