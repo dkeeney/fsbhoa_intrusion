@@ -91,6 +91,7 @@ type AppConfig struct {
 	WUAPIKey             string  `json:"wu_api_key"`
 	NWSStationID         string  `json:"nws_station_id"`
 	WindThreshold        float64 `json:"wind_threshold"`
+	LogFilterMode        int    `json:"log_filter_mode"` // 0=Full, 1=Triggers, 2=Alarms
 }
 
 // FrigateEvent represents the incoming JSON payload from Frigate over MQTT
@@ -125,12 +126,19 @@ type LogBuffer struct {
 
 func (lb *LogBuffer) Write(p []byte) (n int, err error) {
 	lb.mu.Lock()
-	lb.lines = append(lb.lines, string(p))
+
+	// Create our custom 12-hour AM/PM timestamp
+	ts := time.Now().Format("2006/01/02 03:04:05 PM")
+	line := fmt.Sprintf("%s %s", ts, string(p))
+
+	lb.lines = append(lb.lines, line)
 	if len(lb.lines) > 5000 {
 		lb.lines = lb.lines[1:]
 	}
 	lb.mu.Unlock()
-	return os.Stdout.Write(p)
+
+	os.Stdout.Write([]byte(line))
+	return len(p), nil // Fulfill the io.Writer contract
 }
 
 // Dynamic score cache for Frigate API integration
@@ -223,6 +231,7 @@ var (
 
 func main() {
 	log.SetOutput(&logBuf)
+	log.SetFlags(0)
 
 	// Load configuration from file
 	configFile, err := os.ReadFile("config.json")
@@ -248,6 +257,7 @@ func main() {
 			WUStationID:          "KCABAKER235",
 			NWSStationID:         "KBFL",
 			WindThreshold:        15.0,
+			LogFilterMode:        0,
 		}
 		saveConfig()
 	} else {
@@ -274,11 +284,51 @@ func main() {
 
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		logBuf.mu.Lock()
-		defer logBuf.mu.Unlock()
+		linesCopy := make([]string, len(logBuf.lines))
+		copy(linesCopy, logBuf.lines)
+		logBuf.mu.Unlock()
+
+		mu.Lock()
+		mode := appConfig.LogFilterMode
+		mu.Unlock()
+
+		var filtered []string
+		for _, line := range linesCopy {
+			if mode == 1 {
+				// Mode 1: Triggers & Alarms
+				if strings.Contains(line, "[TRACKING]") || strings.Contains(line, "[ALERT]") ||
+				   strings.Contains(line, "[SILENT MODE]") || strings.Contains(line, "[IGNORED]") ||
+				   strings.Contains(line, "[THROTTLED]") || strings.Contains(line, "[OVERRIDE]") ||
+				   strings.Contains(line, "[TEST]") || strings.Contains(line, "[WEATHER]") {
+					filtered = append(filtered, line)
+				}
+			} else if mode == 2 {
+				// Mode 2: Alarms Only (strips out the [TRACKING] lines)
+				if strings.Contains(line, "[ALERT]") || strings.Contains(line, "[SILENT MODE]") ||
+				   strings.Contains(line, "[IGNORED]") || strings.Contains(line, "[THROTTLED]") ||
+				   strings.Contains(line, "[OVERRIDE]") || strings.Contains(line, "[TEST]") ||
+				   strings.Contains(line, "[WEATHER]") {
+					filtered = append(filtered, line)
+				}
+			} else {
+				// Mode 0: Full Log
+				filtered = append(filtered, line)
+			}
+		}
+
+		// Friendly message if the filtered list is empty so the screen doesn't just go blank
+		if len(filtered) == 0 {
+			if mode == 1 {
+				filtered = append(filtered, "--- Filtering for Triggers & Alarms. Waiting for events... ---")
+			} else if mode == 2 {
+				filtered = append(filtered, "--- Filtering for Alarms Only. Waiting for events... ---")
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(logBuf.lines)
+		json.NewEncoder(w).Encode(filtered)
 	})
 
 	http.HandleFunc("/pause", func(w http.ResponseWriter, r *http.Request) {
@@ -287,7 +337,7 @@ func main() {
 		mu.Unlock()
 		log.Printf("[OVERRIDE] Alarms paused via web request for %d minutes.", appConfig.OverrideMinutes)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("15:04:05"))
+		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("03:04:05 PM"))
 	})
 
 	http.HandleFunc("/override", func(w http.ResponseWriter, r *http.Request) {
@@ -531,8 +581,15 @@ func processFrigateEvent(event FrigateEvent) {
 		}
 		recentTriggers = validTriggers
 
-		log.Printf("[TRACKING] Active track on %s earned %d hit(s). Current Trigger count: %d of %d within %d mins.",
-			event.After.Camera, newHits, len(recentTriggers), appConfig.RequiredTriggers, appConfig.TriggerWindowMinutes)
+		// Calculate display metrics for the log
+		// Convert 0.85 to 85 for the percentage display
+		avgConfPct := int((state.TotalConf / float64(state.SampleCount)) * 100)
+
+		// Get the duration as a clean decimal (e.g., 1.5)
+		trackSecs := now.Sub(state.StartTime).Seconds()
+
+		log.Printf("[TRACKING] Active track on %s, Avg Conf: %d%% for %.1f sec; hit %d of %d within %d mins.",
+			event.After.Camera, avgConfPct, trackSecs, len(recentTriggers), appConfig.RequiredTriggers, appConfig.TriggerWindowMinutes)
 
 		if len(recentTriggers) >= appConfig.RequiredTriggers {
 			evaluateAlarmAndCall(event.After.Camera, now)
@@ -605,7 +662,7 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 		go triggerPBXCall(camera)
 
 	} else {
-		log.Printf("[IGNORED] Threshold met on %s, but outside of active alert window (Current time: %02d:%02d).", camera, now.Hour(), now.Minute())
+		log.Printf("[IGNORED] Threshold met on %s, but outside of active alert window (Current time: %s).", camera, now.Format("03:04 PM"))
 		recentTriggers = nil
 	}
 }
@@ -663,6 +720,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		appConfig.WUAPIKey = strings.TrimSpace(r.FormValue("wu_api_key"))
 		appConfig.NWSStationID = strings.TrimSpace(r.FormValue("nws_station_id"))
                 appConfig.WindThreshold, _ = strconv.ParseFloat(r.FormValue("wind_threshold"), 64)
+		appConfig.LogFilterMode, _ = strconv.Atoi(r.FormValue("log_filter_mode"))
 		appConfig.MQTTHost = r.FormValue("mqtt_host")
 		saveConfig()
 		mu.Unlock()

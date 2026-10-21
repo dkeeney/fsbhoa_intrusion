@@ -18,5 +18,6 @@
   "wu_station_id": "KCABAKER235",
   "wu_api_key": "",
   "nws_station_id": "KBFL",
-  "wind_threshold": 15
+  "wind_threshold": 15,
+  "log_filter_mode": 0
 }
