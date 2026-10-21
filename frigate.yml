@@ -59,9 +59,7 @@ cameras:
         - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_2}@192.168.78.51:9008/profile1
           roles:
             - detect
-        - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_2}@192.168.78.51:9008/profile0
-          roles:
-            - record
+            - record # profile0 does not exist on the O2VLB5; profile1 (1080p) is its best stream
     detect:
       enabled: true
       width: 1920
@@ -109,9 +107,7 @@ cameras:
         - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_2}@192.168.78.19:9008/profile1
           roles:
             - detect
-        - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_2}@192.168.78.19:9008/profile0
-          roles:
-            - record 
+            - record # profile0 does not exist on the O2VLB5; profile1 (1080p) is its best stream
     detect:
       enabled: true
       width: 1920
