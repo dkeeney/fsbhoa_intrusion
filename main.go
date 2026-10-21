@@ -803,8 +803,16 @@ func monitorWeather() {
 			}
 		}
 
-		// Polling every 10 minutes keeps us well under any rate limits
-		time.Sleep(10 * time.Minute)
+		// Polling every 10 minutes keeps us well under any rate limits.
+		// Until the first good reading (e.g. DNS not up yet after a reboot), retry every minute.
+		weatherMutex.RLock()
+		haveReading := weatherSource != ""
+		weatherMutex.RUnlock()
+		if haveReading {
+			time.Sleep(10 * time.Minute)
+		} else {
+			time.Sleep(1 * time.Minute)
+		}
 	}
 }
 

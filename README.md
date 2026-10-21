@@ -33,7 +33,7 @@ The top bar of the config portal shows the current weather state and which sourc
 
 ## Hardware Stack
 
-- **Production server:** Beelink EQi13 Mini PC (Intel i5-13500H, 32GB RAM). It uses dual LAN to isolate camera traffic from the main HOA network.
+- **Production server:** Beelink EQi13 Mini PC (Intel i5-13500H, 32GB RAM) on VLAN 42 (192.168.42.63). The cameras are on VLANs 78 and 107, which VLAN 42 can reach.
 - **Telephony:** Incredible PBX (Asterisk) routed through Skyetel SIP trunks.
 - **Cameras:** IP cameras (Speco O2VLB5, Amcrest IP5M-B1186E).
 
