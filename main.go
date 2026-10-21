@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -259,11 +260,17 @@ func main() {
 			WindThreshold:        15.0,
 			LogFilterMode:        0,
 		}
-		saveConfig()
+		if err := saveConfig(); err != nil {
+			log.Printf("[CONFIG] Failed to write default config.json: %v", err)
+		}
 	} else {
 		if err := json.Unmarshal(configFile, &appConfig); err != nil {
 			log.Fatalf("Error parsing config.json: %v", err)
 		}
+	}
+	// Keep running on a bad config (the alarm must stay up), but make the problems visible.
+	for _, p := range validateConfig(appConfig) {
+		log.Printf("[CONFIG] Problem in config.json: %s", p)
 	}
 
 	http.HandleFunc("/config", handleConfig)
@@ -271,9 +278,12 @@ func main() {
 	http.HandleFunc("/toggle-silent", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		appConfig.SilentMode = !appConfig.SilentMode
-		saveConfig()
+		saveErr := saveConfig()
 		isSilent := appConfig.SilentMode
 		mu.Unlock()
+		if saveErr != nil {
+			log.Printf("[CONFIG] Failed to save silent mode to config.json (change is active until restart): %v", saveErr)
+		}
 
 		log.Printf("[SILENT MODE] Toggled via Web UI. SilentMode is now: %v", isSilent)
 
@@ -368,7 +378,10 @@ func main() {
 		log.Printf("[TEST] Manual PBX test triggered via web UI.")
 
 		// Call the exact same function the real alarm uses, passing a dummy camera name
-		go triggerPBXCall("Web_Test_Button")
+		mu.Lock()
+		cfg := appConfig
+		mu.Unlock()
+		go triggerPBXCall("Web_Test_Button", cfg)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -561,7 +574,11 @@ func processFrigateEvent(event FrigateEvent) {
 	// === METRICS EVALUATION ===
 	// Length (SampleCount) and Confidence (TotalConf) work together.
 	// For every block of "MinUpdates" worth of confidence accumulated, award 1 hit.
-	earnedHits := int(state.TotalConf / float64(appConfig.MinUpdates))
+	minUpdates := appConfig.MinUpdates
+	if minUpdates < 1 {
+		minUpdates = 1 // 0 would divide by zero and silently stop all alarms
+	}
+	earnedHits := int(state.TotalConf / float64(minUpdates))
 
 	// If this track grew long/confident enough to earn a new hit...
 	if earnedHits > state.HitsAwarded {
@@ -659,7 +676,7 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 		log.Printf("[ALERT] Threshold met (%d triggers)! Initiating PBX alarm...", appConfig.RequiredTriggers)
 		lastCallTime = time.Now()
 		recentTriggers = nil
-		go triggerPBXCall(camera)
+		go triggerPBXCall(camera, appConfig) // caller holds mu; pass a copy
 
 	} else {
 		log.Printf("[IGNORED] Threshold met on %s, but outside of active alert window (Current time: %s).", camera, now.Format("03:04 PM"))
@@ -667,22 +684,33 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 	}
 }
 
-func triggerPBXCall(camera string) {
-	log.Printf("Initiating PBX call to extension %s via %s@%s...", appConfig.PBXExtension, appConfig.PBXUser, appConfig.PBXHost)
+// The call file is written on the PBX by this fixed command; its contents arrive on stdin,
+// so no config value is ever interpreted by a shell.
+const pbxSpoolCommand = "cat > /tmp/pool_alarm.call && sudo chown asterisk:asterisk /tmp/pool_alarm.call && sudo mv /tmp/pool_alarm.call /var/spool/asterisk/outgoing/"
+
+func triggerPBXCall(camera string, cfg AppConfig) {
+	if problems := validatePBXFields(cfg); len(problems) > 0 {
+		log.Printf("[ALERT] PBX call NOT placed, invalid PBX settings: %s", strings.Join(problems, "; "))
+		return
+	}
+	log.Printf("Initiating PBX call to extension %s via %s@%s...", cfg.PBXExtension, cfg.PBXUser, cfg.PBXHost)
 
 	callFileContents := fmt.Sprintf(
 		"Channel: Local/%s@from-internal\nCallerID: \"Pool Alarm\" <%s>\nMaxRetries: 2\nRetryTime: 60\nWaitTime: 30\nApplication: Playback\nData: silence/2&%s&silence/2&%s&silence/2&%s&silence/2&%s\n",
-		appConfig.PBXExtension,
-		appConfig.CallerID,
-		appConfig.PlaybackAudio, // Plays 1st time
-		appConfig.PlaybackAudio, // Plays 2nd time
-		appConfig.PlaybackAudio, // Plays 3rd time
-		appConfig.PlaybackAudio, // Plays 4th time
+		cfg.PBXExtension,
+		cfg.CallerID,
+		cfg.PlaybackAudio, // Plays 1st time
+		cfg.PlaybackAudio, // Plays 2nd time
+		cfg.PlaybackAudio, // Plays 3rd time
+		cfg.PlaybackAudio, // Plays 4th time
 	)
 
-	sshCommand := fmt.Sprintf("echo '%s' > /tmp/pool_alarm.call && sudo chown asterisk:asterisk /tmp/pool_alarm.call && sudo mv /tmp/pool_alarm.call /var/spool/asterisk/outgoing/", callFileContents)
-
-	cmd := exec.Command("ssh", "-o", "StrictHostKeyChecking=no", fmt.Sprintf("%s@%s", appConfig.PBXUser, appConfig.PBXHost), sshCommand)
+	cmd := exec.Command("ssh",
+		"-o", "BatchMode=yes",
+		"-o", "StrictHostKeyChecking=accept-new", // still refuses a changed PBX host key
+		"-o", "ConnectTimeout=15",
+		"--", cfg.PBXUser+"@"+cfg.PBXHost, pbxSpoolCommand)
+	cmd.Stdin = strings.NewReader(callFileContents)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -692,9 +720,92 @@ func triggerPBXCall(camera string) {
 	}
 }
 
-func saveConfig() {
-	data, _ := json.MarshalIndent(appConfig, "", "  ")
-	os.WriteFile("config.json", data, 0644)
+var (
+	digitsRe  = regexp.MustCompile(`^[0-9]{1,20}$`)
+	audioRe   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_/-]*$`)
+	hostRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+	userRe    = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+	alnumRe   = regexp.MustCompile(`^[A-Za-z0-9]*$`)
+	hhmmRe    = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
+)
+
+// validatePBXFields checks the settings that end up in the ssh command line and the call file.
+func validatePBXFields(c AppConfig) []string {
+	var p []string
+	if !hostRe.MatchString(c.PBXHost) {
+		p = append(p, "PBX host must be a hostname or IP address")
+	}
+	if !userRe.MatchString(c.PBXUser) {
+		p = append(p, "PBX user may only contain letters, digits, '_', '.', '-'")
+	}
+	if !digitsRe.MatchString(c.PBXExtension) {
+		p = append(p, "PBX extension must be digits only")
+	}
+	if !digitsRe.MatchString(c.CallerID) {
+		p = append(p, "Caller ID must be digits only")
+	}
+	if !audioRe.MatchString(c.PlaybackAudio) || strings.Contains(c.PlaybackAudio, "..") {
+		p = append(p, "Playback audio must be a sound name like custom/pool_alarm")
+	}
+	return p
+}
+
+// validateConfig returns every problem with c; an empty result means it is safe to use.
+func validateConfig(c AppConfig) []string {
+	p := validatePBXFields(c)
+	if c.MinUpdates < 1 {
+		p = append(p, "Min updates must be at least 1")
+	}
+	if c.RequiredTriggers < 1 {
+		p = append(p, "Required triggers must be at least 1")
+	}
+	if c.TriggerWindowMinutes < 1 {
+		p = append(p, "Trigger window must be at least 1 minute")
+	}
+	if c.ProximityThreshold < 0 {
+		p = append(p, "Proximity threshold cannot be negative")
+	}
+	if !hhmmRe.MatchString(c.AlertWindowStart) || !hhmmRe.MatchString(c.AlertWindowEnd) {
+		p = append(p, "Alert window times must be HH:MM")
+	}
+	if c.CooldownMinutes < 0 {
+		p = append(p, "Cooldown cannot be negative")
+	}
+	if c.OverrideMinutes < 1 {
+		p = append(p, "Pause duration must be at least 1 minute")
+	}
+	if c.ListenPort < 1024 || c.ListenPort > 65535 {
+		p = append(p, "Listener port must be between 1024 and 65535")
+	}
+	if !hostRe.MatchString(c.MQTTHost) {
+		p = append(p, "MQTT host must be a hostname or IP address")
+	}
+	if !alnumRe.MatchString(c.WUStationID) || !alnumRe.MatchString(c.NWSStationID) {
+		p = append(p, "Weather station IDs may only contain letters and digits")
+	}
+	if !alnumRe.MatchString(c.WUAPIKey) {
+		p = append(p, "Weather Underground API key may only contain letters and digits")
+	}
+	if c.WindThreshold <= 0 {
+		p = append(p, "Wind gust threshold must be greater than 0")
+	}
+	if c.LogFilterMode < 0 || c.LogFilterMode > 2 {
+		p = append(p, "Log filter must be 0, 1 or 2")
+	}
+	return p
+}
+
+// saveConfig writes appConfig atomically (temp file + rename) so a failed write never truncates config.json.
+func saveConfig() error {
+	data, err := json.MarshalIndent(appConfig, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := "config.json.tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, "config.json")
 }
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -702,28 +813,71 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
 
 		mu.Lock()
-		appConfig.MinUpdates, _ = strconv.Atoi(r.FormValue("min_updates"))
-		appConfig.RequiredTriggers, _ = strconv.Atoi(r.FormValue("required_triggers"))
-		appConfig.TriggerWindowMinutes, _ = strconv.Atoi(r.FormValue("trigger_window_minutes"))
-		appConfig.ProximityThreshold, _ = strconv.Atoi(r.FormValue("proximity_threshold"))
-		appConfig.AlertWindowStart = r.FormValue("start_time")
-		appConfig.AlertWindowEnd = r.FormValue("end_time")
-		appConfig.CooldownMinutes, _ = strconv.Atoi(r.FormValue("cooldown_minutes"))
-		appConfig.OverrideMinutes, _ = strconv.Atoi(r.FormValue("override_minutes"))
-		appConfig.ListenPort, _ = strconv.Atoi(r.FormValue("listen_port"))
-		appConfig.PBXHost = r.FormValue("pbx_host")
-		appConfig.PBXUser = r.FormValue("pbx_user")
-		appConfig.PBXExtension = r.FormValue("pbx_extension")
-		appConfig.CallerID = r.FormValue("caller_id")
-		appConfig.PlaybackAudio = r.FormValue("playback_audio")
-		appConfig.WUStationID = r.FormValue("wu_station_id")
-		appConfig.WUAPIKey = strings.TrimSpace(r.FormValue("wu_api_key"))
-		appConfig.NWSStationID = strings.TrimSpace(r.FormValue("nws_station_id"))
-                appConfig.WindThreshold, _ = strconv.ParseFloat(r.FormValue("wind_threshold"), 64)
-		appConfig.LogFilterMode, _ = strconv.Atoi(r.FormValue("log_filter_mode"))
-		appConfig.MQTTHost = r.FormValue("mqtt_host")
-		saveConfig()
+		cfg := appConfig
 		mu.Unlock()
+
+		var problems []string
+		atoi := func(field, label string) int {
+			v, err := strconv.Atoi(strings.TrimSpace(r.FormValue(field)))
+			if err != nil {
+				problems = append(problems, label+" must be a whole number")
+			}
+			return v
+		}
+		cfg.MinUpdates = atoi("min_updates", "Min updates")
+		cfg.RequiredTriggers = atoi("required_triggers", "Required triggers")
+		cfg.TriggerWindowMinutes = atoi("trigger_window_minutes", "Trigger window")
+		cfg.ProximityThreshold = atoi("proximity_threshold", "Proximity threshold")
+		cfg.AlertWindowStart = strings.TrimSpace(r.FormValue("start_time"))
+		cfg.AlertWindowEnd = strings.TrimSpace(r.FormValue("end_time"))
+		cfg.CooldownMinutes = atoi("cooldown_minutes", "Cooldown")
+		cfg.OverrideMinutes = atoi("override_minutes", "Pause duration")
+		cfg.ListenPort = atoi("listen_port", "Listener port")
+		cfg.PBXHost = strings.TrimSpace(r.FormValue("pbx_host"))
+		cfg.PBXUser = strings.TrimSpace(r.FormValue("pbx_user"))
+		cfg.PBXExtension = strings.TrimSpace(r.FormValue("pbx_extension"))
+		cfg.CallerID = strings.TrimSpace(r.FormValue("caller_id"))
+		cfg.PlaybackAudio = strings.TrimSpace(r.FormValue("playback_audio"))
+		cfg.WUStationID = strings.TrimSpace(r.FormValue("wu_station_id"))
+		cfg.WUAPIKey = strings.TrimSpace(r.FormValue("wu_api_key"))
+		cfg.NWSStationID = strings.TrimSpace(r.FormValue("nws_station_id"))
+		wind, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("wind_threshold")), 64)
+		if err != nil {
+			problems = append(problems, "Wind gust threshold must be a number")
+		}
+		cfg.WindThreshold = wind
+		cfg.LogFilterMode = atoi("log_filter_mode", "Log filter")
+		cfg.MQTTHost = strings.TrimSpace(r.FormValue("mqtt_host"))
+
+		if len(problems) == 0 {
+			problems = validateConfig(cfg)
+		}
+		if len(problems) > 0 {
+			log.Printf("[CONFIG] Settings NOT saved: %s", strings.Join(problems, "; "))
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, "<h3>Settings not saved</h3><ul>")
+			for _, p := range problems {
+				fmt.Fprintf(w, "<li>%s</li>", template.HTMLEscapeString(p))
+			}
+			fmt.Fprint(w, `</ul><p><a href="javascript:history.back()">Go back and fix</a></p>`)
+			return
+		}
+
+		mu.Lock()
+		cfg.SilentMode = appConfig.SilentMode // toggled separately; keep its current value
+		old := appConfig
+		appConfig = cfg
+		err = saveConfig()
+		if err != nil {
+			appConfig = old
+		}
+		mu.Unlock()
+		if err != nil {
+			log.Printf("[CONFIG] Failed to save config.json: %v", err)
+			http.Error(w, "Settings could not be saved: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		http.Redirect(w, r, "/config", http.StatusSeeOther)
 		return
