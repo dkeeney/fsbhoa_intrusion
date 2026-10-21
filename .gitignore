@@ -22,3 +22,6 @@ config.json
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# Camera passwords for Frigate (see .env.example)
+.env

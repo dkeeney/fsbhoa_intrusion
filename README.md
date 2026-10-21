@@ -46,6 +46,7 @@ The top bar of the config portal shows the current weather state and which sourc
 ├── config.example.json   Default settings (copy to config.json)
 ├── docker-compose.yml    Frigate + Mosquitto containers
 ├── frigate.yml           Frigate configuration: cameras, detection, masks
+├── .env.example          Camera passwords template (copy to .env; not in git)
 ├── mosquitto.conf        MQTT broker configuration
 ├── build.sh              Builds the listener and installs/restarts its systemd service
 ├── deploy_listener.sh    Full server deployment for alarm.fsbhoa.com
@@ -54,7 +55,7 @@ The top bar of the config portal shows the current weather state and which sourc
 
 ## Deployment
 
-Run these steps on the alarm server from the repository root. You need Go, Docker, and a Let's Encrypt certificate for alarm.fsbhoa.com.
+Run these steps on the alarm server from the repository root. You need Go, Docker, and a Let's Encrypt certificate for alarm.fsbhoa.com. Camera passwords are kept out of git: copy `.env.example` to `.env`, fill them in, and `chmod 600 .env`. `frigate.yml` refers to them as `{FRIGATE_CAM_PASSWORD_1}` and so on.
 
 ```bash
 git clone https://github.com/dkeeney/fsbhoa_intrusion.git

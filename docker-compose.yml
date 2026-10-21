@@ -38,8 +38,8 @@ services:
       - "8554:8554"
       - "8555:8555/tcp"
       - "8555:8555/udp"
-    environment:
-      FRIGATE_RTSP_PASSWORD: "password"
+    env_file:
+      - .env # Camera passwords (FRIGATE_CAM_PASSWORD_*), not in git; see .env.example
 networks:
   frigate_net:
     driver: bridge

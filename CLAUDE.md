@@ -48,4 +48,4 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 - Before changing code, `git fetch`: production commits directly to GitHub `main`, so local `main` may be behind.
 - `main.go` is not `gofmt`-clean; avoid reformatting unrelated lines in a fix.
 - Mosquitto allows anonymous connections (`mosquitto.conf`).
-- `frigate.yml` contains camera RTSP credentials. Be careful when displaying or committing changes to it.
+- Camera RTSP passwords live only in the gitignored `.env` (loaded by `docker-compose.yml` via `env_file`); `frigate.yml` uses `{FRIGATE_CAM_PASSWORD_N}` placeholders. Never put a literal password back into `frigate.yml`. Old passwords remain in git history (the repo is public).

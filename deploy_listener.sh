@@ -31,6 +31,12 @@ if ! command -v docker &> /dev/null; then
     echo "Docker is not installed! Please install Docker first."
     exit 1
 fi
+if [ ! -f .env ]; then
+    cp .env.example .env
+    chmod 600 .env
+    echo "Created .env from .env.example. Fill in the camera passwords, then re-run this script."
+    exit 1
+fi
 docker compose up -d
 echo "✓ Containers running."
 
