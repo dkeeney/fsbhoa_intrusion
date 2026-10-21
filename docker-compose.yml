@@ -24,6 +24,7 @@ services:
       - /dev/dri:/dev/dri
     volumes:
       - /etc/localtime:/etc/localtime:ro
+      - ./frigate_config:/config # Frigate database (users, events, recording index); not in git
       - ./frigate.yml:/config/config.yml
       - ./storage:/media/frigate
       - type: tmpfs # 1GB In-memory filesystem for recording segments
@@ -34,7 +35,7 @@ services:
       - frigate_net
     ports:
       - "8971:8971"
-      - "5000:5000"
+      - "127.0.0.1:5000:5000" # unauthenticated API: local only (the alarm listener); users go through 8971
       - "8554:8554"
       - "8555:8555/tcp"
       - "8555:8555/udp"

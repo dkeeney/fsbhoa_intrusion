@@ -25,3 +25,6 @@ config.json
 
 # Camera passwords for Frigate (see .env.example)
 .env
+
+# Frigate database and runtime files (mounted as /config)
+frigate_config/

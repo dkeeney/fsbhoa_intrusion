@@ -62,7 +62,7 @@ fi
 
 # 4. Configure Apache Reverse Proxy
 #    https://alarm.fsbhoa.com:8090 -> Go config portal (127.0.0.1:8091)
-#    https://alarm.fsbhoa.com:5001 -> Frigate UI with websockets (127.0.0.1:5000)
+#    https://alarm.fsbhoa.com:5001 -> Frigate UI with login and websockets (127.0.0.1:8971, Frigate's self-signed TLS)
 echo "[4/5] Configuring Apache reverse proxy for HTTPS..."
 if ! command -v apache2 &> /dev/null; then
     echo "Installing Apache2..."
@@ -101,14 +101,20 @@ if [ ! -f "${APACHE_SITE}" ]; then
     SSLCertificateFile ${CERT_DIR}/fullchain.pem
     SSLCertificateKeyFile ${CERT_DIR}/privkey.pem
 
+    # Frigate's authenticated port serves its own self-signed certificate
+    SSLProxyEngine On
+    SSLProxyVerify none
+    SSLProxyCheckPeerCN off
+    SSLProxyCheckPeerName off
+
     # WebSockets support for live video
     ProxyPreserveHost On
     RewriteEngine On
     RewriteCond %{HTTP:Upgrade} =websocket [NC]
-    RewriteRule /(.*)  ws://127.0.0.1:5000/\$1 [P,L]
+    RewriteRule /(.*)  wss://127.0.0.1:8971/\$1 [P,L]
 
-    ProxyPass / http://127.0.0.1:5000/
-    ProxyPassReverse / http://127.0.0.1:5000/
+    ProxyPass / https://127.0.0.1:8971/
+    ProxyPassReverse / https://127.0.0.1:8971/
 </VirtualHost>
 EOF
     sudo a2ensite "$(basename "${APACHE_SITE}")"
