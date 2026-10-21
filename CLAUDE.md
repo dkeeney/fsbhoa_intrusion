@@ -52,7 +52,7 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 ## Gotchas / known inconsistencies
 
 - Production runs on **alarm.fsbhoa.com** and is already deployed. Do not run `deploy_listener.sh` or `build.sh` unless asked: they modify systemd, crontab, and Apache. This dev machine (`testbed`) has its own Apache site for testbed.fsbhoa.com.
-- `set_recordings.sh` hard-codes MQTT host `192.168.42.62`, which is testbed, not production; Frigate reaches the broker as `mosquitto` and the Go service uses `mqtt_host` from `config.json`.
+- `set_recordings.sh` publishes to `frigate/<camera>/recordings/set` on `127.0.0.1` (override with `MQTT_HOST=`), so run it on the alarm server; its `CAMERAS` list must match `frigate.yml`. It is not in cron on production. Frigate reaches the broker as `mosquitto`, and the Go service uses `mqtt_host` from `config.json`.
 - Before changing code, `git fetch`: production commits directly to GitHub `main`, so local `main` may be behind.
 - `main.go` is not `gofmt`-clean; avoid reformatting unrelated lines in a fix.
 - Mosquitto allows anonymous connections (`mosquitto.conf`).
