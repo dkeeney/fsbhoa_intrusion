@@ -16,3 +16,6 @@ db/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime settings (may contain API keys); edited via the web portal
+config.json
