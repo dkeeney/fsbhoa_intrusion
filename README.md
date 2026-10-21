@@ -8,9 +8,9 @@ This repository contains the configuration and automation logic for the FSBHOA a
 
 The stack has four components:
 
-- **Frigate NVR** (Docker): ingests the RTSP streams from the pool cameras, runs person detection, and records video. Configured in `frigate.yml`.
+- **Frigate NVR** (Docker): ingests the RTSP streams from the pool cameras, runs person detection with OpenVINO on the Intel GPU, and records video. Configured in `frigate.yml`.
 - **Mosquitto MQTT broker** (Docker): Frigate publishes detection events to the `frigate/events` topic.
-- **Pool alarm listener** (Go, `main.go`): subscribes to `frigate/events` and filters out false positives. It requires a sustained person track, repeated triggers within a time window, the alert time window, and a cooldown. When all of these are met, it uses SSH to drop an Asterisk `.call` file onto the Incredible PBX server, which phones the alert extension. It also serves a web configuration portal.
+- **Pool alarm listener** (Go, `main.go`): subscribes to `frigate/events` and filters out false positives. It requires a sustained, confident person track, repeated triggers within a time window, the alert time window, no weather lockout, and a cooldown. When all of these are met, it uses SSH to drop an Asterisk `.call` file onto the Incredible PBX server, which phones the alert extension. It also serves a web configuration portal.
 - **Apache reverse proxy**: provides HTTPS using the Let's Encrypt certificate for alarm.fsbhoa.com.
 
 ## Web Interfaces
@@ -21,6 +21,15 @@ The stack has four components:
 | `https://alarm.fsbhoa.com:5001` | Frigate UI, live video, and recordings (proxied to Frigate on port 5000) |
 
 Settings saved in the portal are written to `config.json` in the repository directory.
+
+## Weather Lockout
+
+Rain and wind cause false detections, so alarms are automatically muted while it is raining or wind gusts exceed the configured threshold. The listener checks the weather every 10 minutes:
+
+- **Weather Underground station** (`KCABAKER235`, a block from the pool) when a Weather Underground API key is entered in the config portal. Keys are free from wunderground.com → Member Settings → API Keys, but only for accounts that own a personal weather station.
+- **National Weather Service station** (`KBFL`, Meadows Field) when there is no key or Weather Underground fails. No key needed, but it is several miles away.
+
+The top bar of the config portal shows the current weather state and which source it came from.
 
 ## Hardware Stack
 

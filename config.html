@@ -147,6 +147,16 @@
                                             <span class="hint">Hopefully a station in our community. <a href="https://www.wunderground.com/wundermap" target="_blank">WunderMap</a></span>
                                         </div>
                                         <div style="margin-bottom: 15px;">
+                                            <label>Weather Underground API Key:</label><br>
+                                            <span class="hint">From wunderground.com &rarr; Member Settings &rarr; API Keys (requires an account with a personal weather station). Leave blank to use the NWS station below.</span>
+                                            <input type="text" name="wu_api_key" value="{{.WUAPIKey}}" autocomplete="off" style="width: 300px;">
+                                        </div>
+                                        <div style="margin-bottom: 15px;">
+                                            <label>NWS Fallback Station ID:</label><br>
+                                            <span class="hint">Used when there is no WU key or WU fails. KBFL = Meadows Field.</span>
+                                            <input type="text" name="nws_station_id" value="{{.NWSStationID}}" style="width: 100px;">
+                                        </div>
+                                        <div style="margin-bottom: 15px;">
                                             <label>Wind Gust Threshold (mph):</label><br>
                                             <span class="hint">Disables alarm for wind speed higher than this value.</span>
                                             <input type="number" name="wind_threshold" value="{{.WindThreshold}}" step="0.1" style="width: 100px;">
@@ -277,11 +287,14 @@
                         .then(response => response.json())
                         .then(data => {
                             const statusSpan = document.getElementById('weatherStatus');
-                            if (data.isStormy) {
-                                statusSpan.innerHTML = "🌧️ WEATHER AUTO-MUTE: " + data.reason;
+                            if (!data.source) {
+                                statusSpan.textContent = "⚠️ Weather unavailable (alarms not auto-muted)";
+                                statusSpan.style.color = "#f0ad4e"; // Amber for dark navbar
+                            } else if (data.isStormy) {
+                                statusSpan.textContent = "🌧️ WEATHER AUTO-MUTE: " + data.reason + " [" + data.source + "]";
                                 statusSpan.style.color = "#ff6b6b"; // Bright red for dark navbar
                             } else {
-                                statusSpan.innerHTML = "☀️ Weather Clear";
+                                statusSpan.textContent = "☀️ Weather Clear [" + data.source + "]";
                                 statusSpan.style.color = "#5cb85c"; // Green for dark navbar
                             }
                         })

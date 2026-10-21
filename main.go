@@ -25,8 +25,10 @@ var configHTML string
 var (
 	isStormy      bool
 	weatherReason string
+	weatherSource string // "" until the first successful reading
 	weatherMutex  sync.RWMutex
 )
+
 // WUResponse matches the Weather Underground JSON structure
 type WUResponse struct {
 	Observations []struct {
@@ -35,6 +37,33 @@ type WUResponse struct {
 			PrecipRate float64 `json:"precipRate"` // Inches per hour currently falling
 		} `json:"imperial"`
 	} `json:"observations"`
+}
+
+// NWSResponse matches the api.weather.gov latest observation JSON (wind in km/h)
+type NWSResponse struct {
+	Properties struct {
+		Timestamp       time.Time `json:"timestamp"`
+		TextDescription string    `json:"textDescription"`
+		PresentWeather  []struct {
+			Intensity string `json:"intensity"`
+			Weather   string `json:"weather"`
+		} `json:"presentWeather"`
+		WindGust struct {
+			Value *float64 `json:"value"`
+		} `json:"windGust"`
+		WindSpeed struct {
+			Value *float64 `json:"value"`
+		} `json:"windSpeed"`
+	} `json:"properties"`
+}
+
+// WeatherObs is one reading from whichever weather source answered
+type WeatherObs struct {
+	Source     string
+	WindGust   float64 // mph
+	PrecipRate float64 // in/hr (WU only)
+	Raining    bool
+	Detail     string
 }
 
 // tmpl safely compiles our embedded HTML to prevent CSS formatting conflicts
@@ -59,6 +88,8 @@ type AppConfig struct {
 	PlaybackAudio        string `json:"playback_audio"`
 	MQTTHost             string `json:"mqtt_host"`
 	WUStationID          string  `json:"wu_station_id"`
+	WUAPIKey             string  `json:"wu_api_key"`
+	NWSStationID         string  `json:"nws_station_id"`
 	WindThreshold        float64 `json:"wind_threshold"`
 }
 
@@ -215,6 +246,7 @@ func main() {
 			PlaybackAudio:        "custom/pool-intrusion-alert",
 			MQTTHost:             "127.0.0.1",
 			WUStationID:          "KCABAKER235",
+			NWSStationID:         "KBFL",
 			WindThreshold:        15.0,
 		}
 		saveConfig()
@@ -298,6 +330,7 @@ func main() {
                status := map[string]interface{}{
                    "isStormy": isStormy,
                    "reason":   weatherReason,
+                   "source":   weatherSource,
                }
                weatherMutex.RUnlock()
 
@@ -542,6 +575,16 @@ func evaluateAlarmAndCall(camera string, now time.Time) {
 			return
 		}
 
+		// WEATHER LOCKOUT CHECK (rain or high wind)
+		weatherMutex.RLock()
+		stormy, reason := isStormy, weatherReason
+		weatherMutex.RUnlock()
+		if stormy {
+			log.Printf("[WEATHER] Threshold met on %s, but alarms are auto-muted: %s.", camera, reason)
+			recentTriggers = nil
+			return
+		}
+
 		if time.Since(lastCallTime) < time.Duration(appConfig.CooldownMinutes)*time.Minute {
 			log.Printf("[THROTTLED] Threshold met on %s, but system is in a %d-minute cooldown period.", camera, appConfig.CooldownMinutes)
 			recentTriggers = nil
@@ -617,6 +660,8 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		appConfig.CallerID = r.FormValue("caller_id")
 		appConfig.PlaybackAudio = r.FormValue("playback_audio")
 		appConfig.WUStationID = r.FormValue("wu_station_id")
+		appConfig.WUAPIKey = strings.TrimSpace(r.FormValue("wu_api_key"))
+		appConfig.NWSStationID = strings.TrimSpace(r.FormValue("nws_station_id"))
                 appConfig.WindThreshold, _ = strconv.ParseFloat(r.FormValue("wind_threshold"), 64)
 		appConfig.MQTTHost = r.FormValue("mqtt_host")
 		saveConfig()
@@ -635,56 +680,160 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error rendering template: %v", err)
 	}
 }
-func monitorWeather() {
-	apiKey := "e1f10a1e78da46f5b10a1e78da96f525" // Standard WU public frontend key
+var weatherClient = &http.Client{Timeout: 15 * time.Second}
 
+func monitorWeather() {
 	for {
 		// 1. Safely lock and read the latest settings from memory on every loop!
 		mu.Lock()
-		stationID := appConfig.WUStationID
+		wuStation := appConfig.WUStationID
+		wuKey := appConfig.WUAPIKey
+		nwsStation := appConfig.NWSStationID
 		threshold := appConfig.WindThreshold
 		mu.Unlock()
 
-		if stationID == "" {
-			stationID = "KCABAKER235" // Fallback just in case
+		if wuStation == "" {
+			wuStation = "KCABAKER235" // Fallback just in case
+		}
+		if nwsStation == "" {
+			nwsStation = "KBFL"
 		}
 		if threshold <= 0 {
 			threshold = 15.0 // Safe fallback so 0 doesn't mute alarms forever
 		}
 
-		// 2. Build the URL dynamically with the latest station ID
-		url := fmt.Sprintf("https://api.weather.com/v2/pws/observations/current?stationId=%s&format=json&units=e&apiKey=%s", stationID, apiKey)
-
-		resp, err := http.Get(url)
-		if err == nil {
-			var wu WUResponse
-			if err := json.NewDecoder(resp.Body).Decode(&wu); err == nil && len(wu.Observations) > 0 {
-				obs := wu.Observations[0].Imperial
-				stormy := false
-				reason := ""
-
-				if obs.WindGust > threshold {
-					stormy = true
-					reason = fmt.Sprintf("High Winds (%.1f mph gust)", obs.WindGust)
-				} else if obs.PrecipRate > 0.0 {
-					stormy = true
-					reason = fmt.Sprintf("Active Rain (%.2f in/hr)", obs.PrecipRate)
-				}
-
-				// Safely update the global state
-				weatherMutex.Lock()
-				isStormy = stormy
-				weatherReason = reason
-				weatherMutex.Unlock()
+		// 2. Prefer the nearby WU station; fall back to NWS when there is no key or WU fails
+		var obs WeatherObs
+		var err error
+		if wuKey != "" {
+			obs, err = fetchWU(wuStation, wuKey)
+			if err != nil {
+				log.Printf("[WEATHER] WU station %s failed: %v. Falling back to NWS %s.", wuStation, err, nwsStation)
 			}
-			resp.Body.Close()
+		}
+		if wuKey == "" || err != nil {
+			obs, err = fetchNWS(nwsStation)
+		}
+
+		if err != nil {
+			log.Printf("[WEATHER] NWS station %s failed: %v. Keeping previous weather state.", nwsStation, err)
 		} else {
-			log.Printf("[WEATHER] Error fetching weather data: %v", err)
+			stormy := false
+			reason := ""
+			if obs.WindGust > threshold {
+				stormy = true
+				reason = fmt.Sprintf("High Winds (%.1f mph gust)", obs.WindGust)
+			} else if obs.Raining {
+				stormy = true
+				reason = "Active Rain (" + obs.Detail + ")"
+			}
+
+			// Safely update the global state
+			weatherMutex.Lock()
+			changed := stormy != isStormy || obs.Source != weatherSource
+			isStormy = stormy
+			weatherReason = reason
+			weatherSource = obs.Source
+			weatherMutex.Unlock()
+
+			if changed {
+				if stormy {
+					log.Printf("[WEATHER] Alarms auto-muted via %s: %s", obs.Source, reason)
+				} else {
+					log.Printf("[WEATHER] Weather clear via %s (gust %.1f mph, %s). Alarms active.", obs.Source, obs.WindGust, obs.Detail)
+				}
+			}
 		}
 
 		// Polling every 10 minutes keeps us well under any rate limits
 		time.Sleep(10 * time.Minute)
 	}
+}
+
+// fetchWU reads the current observation from a Weather Underground personal weather station.
+func fetchWU(stationID, apiKey string) (WeatherObs, error) {
+	url := fmt.Sprintf("https://api.weather.com/v2/pws/observations/current?stationId=%s&format=json&units=e&apiKey=%s", stationID, apiKey)
+	resp, err := weatherClient.Get(url)
+	if err != nil {
+		return WeatherObs{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return WeatherObs{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var wu WUResponse
+	if err := json.NewDecoder(resp.Body).Decode(&wu); err != nil {
+		return WeatherObs{}, err
+	}
+	if len(wu.Observations) == 0 {
+		return WeatherObs{}, fmt.Errorf("no observations (station offline?)")
+	}
+
+	obs := wu.Observations[0].Imperial
+	return WeatherObs{
+		Source:     "WU " + stationID,
+		WindGust:   obs.WindGust,
+		PrecipRate: obs.PrecipRate,
+		Raining:    obs.PrecipRate > 0.0,
+		Detail:     fmt.Sprintf("%.2f in/hr", obs.PrecipRate),
+	}, nil
+}
+
+// fetchNWS reads the latest observation from a National Weather Service station (no key needed).
+func fetchNWS(stationID string) (WeatherObs, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("https://api.weather.gov/stations/%s/observations/latest", stationID), nil)
+	if err != nil {
+		return WeatherObs{}, err
+	}
+	req.Header.Set("User-Agent", "fsbhoa-pool-alarm") // NWS rejects requests without one
+	req.Header.Set("Accept", "application/geo+json")
+
+	resp, err := weatherClient.Do(req)
+	if err != nil {
+		return WeatherObs{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return WeatherObs{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	var nws NWSResponse
+	if err := json.NewDecoder(resp.Body).Decode(&nws); err != nil {
+		return WeatherObs{}, err
+	}
+	p := nws.Properties
+	if age := time.Since(p.Timestamp); age > 2*time.Hour {
+		return WeatherObs{}, fmt.Errorf("observation is stale (%s old)", age.Round(time.Minute))
+	}
+
+	// Gusts are only reported when present; otherwise use sustained wind. NWS reports km/h.
+	windKmh := p.WindSpeed.Value
+	if p.WindGust.Value != nil {
+		windKmh = p.WindGust.Value
+	}
+	var gustMph float64
+	if windKmh != nil {
+		gustMph = *windKmh / 1.609344
+	}
+
+	raining := false
+	for _, w := range p.PresentWeather {
+		if strings.Contains(w.Weather, "rain") || strings.Contains(w.Weather, "drizzle") || strings.Contains(w.Weather, "thunder") {
+			raining = true
+		}
+	}
+
+	detail := p.TextDescription
+	if detail == "" {
+		detail = "no description"
+	}
+	return WeatherObs{
+		Source:   "NWS " + stationID,
+		WindGust: gustMph,
+		Raining:  raining,
+		Detail:   detail,
+	}, nil
 }
 
 
