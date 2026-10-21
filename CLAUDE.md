@@ -12,12 +12,14 @@ After-hours intrusion detection for the FSBHOA pool. Frigate NVR runs AI person 
 go build -o fsbhoa_intrusion      # build only
 go vet ./...                      # static checks (there are no tests in the repo)
 ./build.sh                        # build + create/enable/restart the systemd service (uses sudo)
-./deploy_listener.sh              # full deploy for alarm.fsbhoa.com (containers, service, SSH key, Apache vhosts); idempotent
+./deploy_listener.sh              # full deploy for alarm.fsbhoa.com (containers, service, SSH key, Apache vhosts); idempotent; stops until .env exists
 sudo journalctl -u fsbhoa_intrusion.service -f   # live service logs
 
 docker compose up -d              # start Mosquitto (1883) + Frigate (UI 5000/8971, RTSP 8554, WebRTC 8555)
 docker compose restart frigate    # pick up frigate.yml edits
 ```
+
+**Testing without a phone call:** run the built binary from a scratch directory with its own `config.json` (`silent_mode: true`, a spare `listen_port`, and an unreachable `pbx_host`/`mqtt_host` such as 192.0.2.1), then query `/config`, `/weather-status` and `/logs`. `/test-alarm` always places a real call. In a `go test` file, log output only reaches `logBuf` if the test calls `log.SetOutput(&logBuf)`, because `main()` normally does that.
 
 The binary reads and writes `config.json` in its **working directory**, so run it from the repo root. If the file is missing it writes defaults (hard-coded in `main()`). `config.json` is gitignored (it holds the WU API key); `config.example.json` mirrors the `main()` defaults, so keep the two in sync when adding a field.
 
@@ -27,13 +29,13 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 
 **Go service (`main.go`, single file, package main):**
 - All mutable state is package-level globals (`objectStates`, `recentTriggers`, `lastCallTime`, `overrideUntil`, `appConfig`) guarded by one `mu` mutex; weather state (`isStormy`, `weatherReason`, `weatherSource`) has its own `weatherMutex`.
-- Background goroutines: `startMQTTListener`, `monitorWeather` (polls every 10 min), and an `init()` loop that reads per-camera person `min_score` from Frigate's API (`127.0.0.1:5000/api/config`).
+- Background goroutines: `startMQTTListener`, `monitorWeather` (polls every 10 min, every 1 min until the first good reading), and an `init()` loop that reads per-camera person `min_score` from Frigate's API (`127.0.0.1:5000/api/config`).
 - Alert pipeline, in `processFrigateEvent` → `evaluateAlarmAndCall` → `triggerPBXCall`:
   1. Only `label == "person"` events count; an `end` event logs a `[TRACK END]` summary and drops the track. Tracks idle >60s are pruned.
   2. **ID bridging:** when a new Frigate ID shows up 100ms–3s after another one went quiet, within `proximity_threshold` pixels of its box center, it inherits that track (Frigate often reassigns IDs to the same person).
   3. Each update adds its confidence (floored at the camera's `min_score`) to the track's `TotalConf`; every `min_updates` worth of accumulated confidence awards one trigger. `required_triggers` triggers within `trigger_window_minutes` meets the threshold.
   4. Then, in order: outside the alert window (wraps past midnight, e.g. 22:30–04:40) → ignored; pause/override → suppressed; **weather lockout** (`isStormy`) → suppressed; inside `cooldown_minutes` → throttled; `silent_mode` → logged only (still sets `lastCallTime`); otherwise the call is placed. Every outcome clears `recentTriggers`.
-- **Weather lockout:** gusts above `wind_threshold` mph or active rain set `isStormy`. Source is the Weather Underground PWS `wu_station_id` (a block from the pool) when `wu_api_key` is set, otherwise or on failure the NWS station `nws_station_id` (default KBFL, several miles away, no key). If both fail the previous state is kept (retrying every minute until the first good reading); the page shows "Weather unavailable" until the first good reading. Do not hard-code a WU key scraped from wunderground.com: the old shared one was throttled (HTTP 401), which silently disabled the lockout.
+- **Weather lockout:** gusts above `wind_threshold` mph or active rain set `isStormy`. Source is the Weather Underground PWS `wu_station_id` (a block from the pool) when `wu_api_key` is set, otherwise or on failure the NWS station `nws_station_id` (default KBFL, several miles away, no key). If both fail the previous state is kept (retrying every minute until the first good reading); the page shows "Weather unavailable" until the first good reading. Do not hard-code a WU key scraped from wunderground.com: the old shared one was throttled (HTTP 401), which silently disabled the lockout. As of 2026-10-21 production has no WU key and uses NWS KBFL.
 - The PBX call is made by shelling out to the system `ssh` binary (key auth as `pbx_user`, `StrictHostKeyChecking=no`); the remote user needs passwordless sudo to `chown`/`mv` into the Asterisk spool. The call plays `playback_audio` four times.
 - HTTP (port `listen_port`, default 8091, served via Apache HTTPS on 8090 in production): `/config` (GET renders the form, POST saves every field), `/toggle-silent`, `/pause` (for `override_minutes`), `/override` (pause indefinitely), `/resume`, `/test-alarm` (POST, places a real PBX call), `/weather-status`, `/logs` (JSON of the last 5000 log lines, captured by `LogBuffer` as the `log` output, with 12-hour timestamps). `/logs` filters by `log_filter_mode` (0 all, 1 triggers and alarms, 2 alarms only) using hard-coded tag lists such as `[TRACKING]` and `[WEATHER]`; a new log tag that should stay visible must be added to those lists.
 - `config.html` is compiled into the binary with `//go:embed` and rendered with `html/template`. Rebuild after editing it. When adding a config field, update the `AppConfig` struct, the defaults in `main()`, the POST handler in `handleConfig`, and the form in `config.html` together.
