@@ -193,7 +193,7 @@
 		// Auto-load Frigate on page load
 		window.onload = function() {
 			const frigateIframe = document.getElementById('frigateFrame');
-			frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001/birdseye";
+			frigateIframe.src = "/frigate/birdseye"; // same address and login as the portal (Apache proxies /frigate/)
 		};
 
 		function openTab(evt, tabName) {
@@ -216,7 +216,7 @@
 			if (tabName === 'Cameras') {
 				const frigateIframe = document.getElementById('frigateFrame');
 				if (!frigateIframe.src) {
-					frigateIframe.src = window.location.protocol + "//" + window.location.hostname + ":5001/birdseye";
+					frigateIframe.src = "/frigate/birdseye"; // same address and login as the portal (Apache proxies /frigate/)
 				}
 			}
 		}

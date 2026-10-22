@@ -73,7 +73,7 @@ if [ ! -f "${CERT_DIR}/fullchain.pem" ]; then
     echo "   sudo certbot --apache -d ${DOMAIN}"
     exit 1
 fi
-sudo a2enmod proxy proxy_http proxy_wstunnel ssl rewrite
+sudo a2enmod proxy proxy_http proxy_wstunnel ssl rewrite headers
 
 for PORT in 8090 5001; do
     if ! grep -qE "^\s*Listen\s+${PORT}\b" /etc/apache2/ports.conf; then
@@ -98,6 +98,17 @@ if [ ! -f "${APACHE_SITE}" ]; then
         Require valid-user
     </Location>
 
+    # Frigate under /frigate/ on the same address, covered by the same login.
+    # Port 5000 is Frigate's internal (no-login) port; X-Ingress-Path sets its base path.
+    <Location /frigate/>
+        RequestHeader set X-Ingress-Path "/frigate"
+    </Location>
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/frigate/(.*) ws://127.0.0.1:5000/\$1 [P,L]
+    ProxyPass /frigate/ http://127.0.0.1:5000/
+    ProxyPassReverse /frigate/ http://127.0.0.1:5000/
+
     ProxyPass / http://127.0.0.1:8091/
     ProxyPassReverse / http://127.0.0.1:8091/
 </VirtualHost>
@@ -116,6 +127,17 @@ if [ ! -f "${APACHE_SITE}" ]; then
         AuthUserFile /etc/apache2/.htpasswd-alarm
         Require valid-user
     </Location>
+
+    # Frigate under /frigate/ on the same address, covered by the same login.
+    # Port 5000 is Frigate's internal (no-login) port; X-Ingress-Path sets its base path.
+    <Location /frigate/>
+        RequestHeader set X-Ingress-Path "/frigate"
+    </Location>
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/frigate/(.*) ws://127.0.0.1:5000/\$1 [P,L]
+    ProxyPass /frigate/ http://127.0.0.1:5000/
+    ProxyPassReverse /frigate/ http://127.0.0.1:5000/
 
     ProxyPass / http://127.0.0.1:8091/
     ProxyPassReverse / http://127.0.0.1:8091/
