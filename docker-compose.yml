@@ -36,7 +36,7 @@ services:
     ports:
       - "8971:8971"
       - "127.0.0.1:5000:5000" # unauthenticated API: local only (the alarm listener); users go through 8971
-      - "8554:8554"
+      - "127.0.0.1:8554:8554" # go2rtc RTSP relay has no login; nothing outside the server uses it
       - "8555:8555/tcp"
       - "8555:8555/udp"
     env_file:
