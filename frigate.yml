@@ -145,11 +145,8 @@ cameras:
       motion:
         days: 3
     ffmpeg:
-      input_args:
-        - -avoid_negative_ts
-        - make_zero
-        - -rtsp_transport
-        - tcp
+      # No custom input_args: Frigate's default preset-rtsp-generic adds discardcorrupt,
+      # wall-clock timestamps (Reolink's are unreliable) and a 10 s timeout
       inputs:
         # High resolution stream for recording (H.265)
         - path: 
