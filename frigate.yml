@@ -85,12 +85,12 @@ cameras:
         days: 3
     ffmpeg:
       inputs:
-        - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_1}@192.168.78.36:554/cam/realmonitor?channel=1&subtype=0
-          roles:
-            - record
+        # One connection for both roles: two copies of the 5 MP stream over the NanoBeam link
+        # caused corrupt frames and ffmpeg (VAAPI) crashes
         - path: rtsp://admin:{FRIGATE_CAM_PASSWORD_1}@192.168.78.36:554/cam/realmonitor?channel=1&subtype=0
           roles:
             - detect
+            - record
     detect:
       enabled: true
       width: 2592
