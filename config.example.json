@@ -19,5 +19,6 @@
   "wu_api_key": "",
   "nws_station_id": "KBFL",
   "wind_threshold": 15,
+  "rain_holdover_minutes": 60,
   "log_filter_mode": 0
 }

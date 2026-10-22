@@ -28,6 +28,7 @@ var (
 	isStormy      bool
 	weatherReason string
 	weatherSource string // "" until the first successful reading
+	lastRainSeen  time.Time // last observation that reported rain; starts the rain holdover
 	weatherMutex  sync.RWMutex
 )
 
@@ -93,7 +94,8 @@ type AppConfig struct {
 	WUAPIKey             string  `json:"wu_api_key"`
 	NWSStationID         string  `json:"nws_station_id"`
 	WindThreshold        float64 `json:"wind_threshold"`
-	LogFilterMode        int    `json:"log_filter_mode"` // 0=Full, 1=Triggers, 2=Alarms
+	RainHoldoverMinutes  int     `json:"rain_holdover_minutes"` // keep alarms muted this long after rain stops (wet pavement)
+	LogFilterMode       int    `json:"log_filter_mode"` // 0=Full, 1=Triggers, 2=Alarms
 }
 
 // FrigateEvent represents the incoming JSON payload from Frigate over MQTT
@@ -259,12 +261,14 @@ func main() {
 			WUStationID:          "KCABAKER235",
 			NWSStationID:         "KBFL",
 			WindThreshold:        15.0,
+			RainHoldoverMinutes:  60,
 			LogFilterMode:        0,
 		}
 		if err := saveConfig(); err != nil {
 			log.Printf("[CONFIG] Failed to write default config.json: %v", err)
 		}
 	} else {
+		appConfig.RainHoldoverMinutes = 60 // default for config files written before this setting existed
 		if err := json.Unmarshal(configFile, &appConfig); err != nil {
 			log.Fatalf("Error parsing config.json: %v", err)
 		}
@@ -782,6 +786,9 @@ func validateConfig(c AppConfig) []string {
 	if c.WindThreshold <= 0 {
 		p = append(p, "Wind gust threshold must be greater than 0")
 	}
+	if c.RainHoldoverMinutes < 0 {
+		p = append(p, "Rain holdover cannot be negative")
+	}
 	if c.LogFilterMode < 0 || c.LogFilterMode > 2 {
 		p = append(p, "Log filter must be 0, 1 or 2")
 	}
@@ -879,6 +886,7 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			problems = append(problems, "Wind gust threshold must be a number")
 		}
 		cfg.WindThreshold = wind
+		cfg.RainHoldoverMinutes = atoi("rain_holdover_minutes", "Rain holdover")
 		cfg.LogFilterMode = atoi("log_filter_mode", "Log filter")
 		cfg.MQTTHost = strings.TrimSpace(r.FormValue("mqtt_host"))
 
@@ -935,6 +943,7 @@ func monitorWeather() {
 		wuKey := appConfig.WUAPIKey
 		nwsStation := appConfig.NWSStationID
 		threshold := appConfig.WindThreshold
+		holdover := time.Duration(appConfig.RainHoldoverMinutes) * time.Minute
 		mu.Unlock()
 
 		if wuStation == "" {
@@ -975,7 +984,16 @@ func monitorWeather() {
 
 			// Safely update the global state
 			weatherMutex.Lock()
-			changed := stormy != isStormy || obs.Source != weatherSource
+			if obs.Raining {
+				lastRainSeen = time.Now()
+			} else if !stormy && !lastRainSeen.IsZero() && time.Since(lastRainSeen) < holdover {
+				// Wet pavement and puddles still fool the detector for a while after the rain stops
+				stormy = true
+				reason = fmt.Sprintf("Drying out: rain last seen %s, muted until %s",
+					lastRainSeen.Format("3:04 PM"), lastRainSeen.Add(holdover).Format("3:04 PM"))
+			}
+			holding := strings.HasPrefix(reason, "Drying out")
+			changed := stormy != isStormy || obs.Source != weatherSource || holding != strings.HasPrefix(weatherReason, "Drying out")
 			isStormy = stormy
 			weatherReason = reason
 			weatherSource = obs.Source

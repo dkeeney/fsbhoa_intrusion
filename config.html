@@ -161,6 +161,11 @@
                                             <span class="hint">Disables alarm for wind speed higher than this value.</span>
                                             <input type="number" name="wind_threshold" value="{{.WindThreshold}}" step="0.1" style="width: 100px;">
                                         </div>
+                                        <div style="margin-bottom: 15px;">
+                                            <label><b>Rain Holdover (minutes):</b></label><br>
+                                            <span class="hint">Keeps alarms muted this long after rain stops, while wet pavement can still look like people. 0 = off.</span>
+                                            <input type="number" name="rain_holdover_minutes" value="{{.RainHoldoverMinutes}}" min="0" style="width: 100px;">
+                                        </div>
 					<h3>Web UI Preferences</h3>
 	                                <label><b>Live Log Display Filter</b></label>
 	                                <span class="hint">Filters the logs shown on the Cameras tab. Full data is always saved to the background service log.</span>
