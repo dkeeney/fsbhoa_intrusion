@@ -61,7 +61,7 @@ else
 fi
 
 # 4. Configure Apache Reverse Proxy
-#    https://alarm.fsbhoa.com:8090 -> Go config portal (127.0.0.1:8091)
+#    https://alarm.fsbhoa.com and :8090 -> Go config portal (127.0.0.1:8091), with login
 #    https://alarm.fsbhoa.com:5001 -> Frigate UI with login and websockets (127.0.0.1:8971, Frigate's self-signed TLS)
 echo "[4/5] Configuring Apache reverse proxy for HTTPS..."
 if ! command -v apache2 &> /dev/null; then
@@ -91,6 +91,25 @@ if [ ! -f "${APACHE_SITE}" ]; then
     SSLCertificateKeyFile ${CERT_DIR}/privkey.pem
 
     # The portal can disable the alarm, so require a login
+    <Location />
+        AuthType Basic
+        AuthName "FSBHOA Pool Alarm"
+        AuthUserFile /etc/apache2/.htpasswd-alarm
+        Require valid-user
+    </Location>
+
+    ProxyPass / http://127.0.0.1:8091/
+    ProxyPassReverse / http://127.0.0.1:8091/
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName ${DOMAIN}
+
+    SSLEngine on
+    SSLCertificateFile ${CERT_DIR}/fullchain.pem
+    SSLCertificateKeyFile ${CERT_DIR}/privkey.pem
+
+    # Same portal as :8090 (the access.fsbhoa.com menu links here); same login
     <Location />
         AuthType Basic
         AuthName "FSBHOA Pool Alarm"
