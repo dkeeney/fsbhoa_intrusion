@@ -90,6 +90,14 @@ if [ ! -f "${APACHE_SITE}" ]; then
     SSLCertificateFile ${CERT_DIR}/fullchain.pem
     SSLCertificateKeyFile ${CERT_DIR}/privkey.pem
 
+    # The portal can disable the alarm, so require a login
+    <Location />
+        AuthType Basic
+        AuthName "FSBHOA Pool Alarm"
+        AuthUserFile /etc/apache2/.htpasswd-alarm
+        Require valid-user
+    </Location>
+
     ProxyPass / http://127.0.0.1:8091/
     ProxyPassReverse / http://127.0.0.1:8091/
 </VirtualHost>
@@ -121,6 +129,12 @@ EOF
     echo "✓ Created and enabled ${APACHE_SITE}."
 else
     echo "✓ ${APACHE_SITE} already exists, leaving it unchanged."
+fi
+if [ ! -f /etc/apache2/.htpasswd-alarm ]; then
+    echo "Create the config portal login (username fsbhoa):"
+    sudo htpasswd -c /etc/apache2/.htpasswd-alarm fsbhoa
+    sudo chown root:www-data /etc/apache2/.htpasswd-alarm
+    sudo chmod 640 /etc/apache2/.htpasswd-alarm
 fi
 sudo apache2ctl configtest
 sudo systemctl reload apache2

@@ -17,7 +17,7 @@ The stack has four components:
 
 | URL | Purpose |
 |-----|---------|
-| `https://alarm.fsbhoa.com:8090/config` | Alarm settings, silent-mode toggle, pause/resume, and live logs (proxied to the Go listener on port 8091) |
+| `https://alarm.fsbhoa.com:8090/config` | Alarm settings, silent-mode toggle, test call, and live logs. Requires the portal login (proxied to the Go listener on 127.0.0.1:8091) |
 | `https://alarm.fsbhoa.com:5001` | Frigate UI, live video, and recordings. Requires the Frigate login (proxied to Frigate's authenticated port 8971) |
 
 Settings saved in the portal are written to `config.json` in the repository directory. `config.json` is not tracked by git because it holds the Weather Underground API key. `config.example.json` has the default settings; if `config.json` is missing, the listener creates it with those defaults.

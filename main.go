@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -275,7 +276,7 @@ func main() {
 
 	http.HandleFunc("/config", handleConfig)
 
-	http.HandleFunc("/toggle-silent", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/toggle-silent", portalPost(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		appConfig.SilentMode = !appConfig.SilentMode
 		saveErr := saveConfig()
@@ -288,9 +289,8 @@ func main() {
 		log.Printf("[SILENT MODE] Toggled via Web UI. SilentMode is now: %v", isSilent)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(map[string]bool{"silent_mode": isSilent})
-	})
+	}))
 
 	http.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		logBuf.mu.Lock()
@@ -337,44 +337,37 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		json.NewEncoder(w).Encode(filtered)
 	})
 
-	http.HandleFunc("/pause", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/pause", portalPost(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		overrideUntil = time.Now().Add(time.Duration(appConfig.OverrideMinutes) * time.Minute)
+		minutes := appConfig.OverrideMinutes
+		overrideUntil = time.Now().Add(time.Duration(minutes) * time.Minute)
+		until := overrideUntil
 		mu.Unlock()
-		log.Printf("[OVERRIDE] Alarms paused via web request for %d minutes.", appConfig.OverrideMinutes)
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		fmt.Fprintf(w, "Alarms paused until %s", overrideUntil.Format("03:04:05 PM"))
-	})
+		log.Printf("[OVERRIDE] Alarms paused via web request for %d minutes.", minutes)
+		fmt.Fprintf(w, "Alarms paused until %s", until.Format("03:04:05 PM"))
+	}))
 
-	http.HandleFunc("/override", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/override", portalPost(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		// Set the override to exactly 10 years in the future to make it permanent
 		overrideUntil = time.Now().AddDate(10, 0, 0) 
 		mu.Unlock()
 		log.Printf("[OVERRIDE] Alarms disabled PERMANENTLY via web request.")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		fmt.Fprintf(w, "Alarms permanently disabled until a /resume command is received.")
-	})
+	}))
 
-	http.HandleFunc("/resume", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/resume", portalPost(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		overrideUntil = time.Time{}
 		mu.Unlock()
 		log.Printf("[OVERRIDE] Alarms resumed via web request.")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		fmt.Fprintf(w, "Alarms resumed and active.")
-	})
+	}))
 
-	http.HandleFunc("/test-alarm", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
+	http.HandleFunc("/test-alarm", portalPost(func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[TEST] Manual PBX test triggered via web UI.")
 
 		// Call the exact same function the real alarm uses, passing a dummy camera name
@@ -384,9 +377,8 @@ func main() {
 		go triggerPBXCall("Web_Test_Button", cfg)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		fmt.Fprintf(w, `{"status": "success", "message": "PBX call sent to spool!"}`)
-	})
+	}))
 
 	http.HandleFunc("/weather-status", func(w http.ResponseWriter, r *http.Request) {
                weatherMutex.RLock()
@@ -415,8 +407,9 @@ func main() {
 	go monitorWeather()
 	go startMQTTListener()
 
-	log.Printf("Starting FSBHOA Configuration Portal on port %d...", appConfig.ListenPort)
-	addr := fmt.Sprintf(":%d", appConfig.ListenPort)
+	// Loopback only: users reach the portal through Apache (HTTPS + login) on 8090.
+	log.Printf("Starting FSBHOA Configuration Portal on 127.0.0.1:%d...", appConfig.ListenPort)
+	addr := fmt.Sprintf("127.0.0.1:%d", appConfig.ListenPort)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
@@ -795,6 +788,41 @@ func validateConfig(c AppConfig) []string {
 	return p
 }
 
+// fromPortal reports whether a request came from the portal's own pages rather than
+// another website riding on the browser's saved login. Browsers send Sec-Fetch-Site;
+// older ones only Origin, compared with the host Apache forwards in X-Forwarded-Host.
+func fromPortal(r *http.Request) bool {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin" || site == "none"
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // not a browser cross-site request (e.g. curl on the server)
+	}
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host == host
+}
+
+// portalPost wraps a state-changing endpoint: POST only, and only from the portal's pages.
+func portalPost(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !fromPortal(r) {
+			log.Printf("[OVERRIDE] Rejected %s from another site (Origin %q)", r.URL.Path, r.Header.Get("Origin"))
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		h(w, r)
+	}
+}
+
 // saveConfig writes appConfig atomically (temp file + rename) so a failed write never truncates config.json.
 func saveConfig() error {
 	data, err := json.MarshalIndent(appConfig, "", "  ")
@@ -810,6 +838,11 @@ func saveConfig() error {
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		if !fromPortal(r) {
+			log.Printf("[CONFIG] Rejected settings POST from another site (Origin %q)", r.Header.Get("Origin"))
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
 		r.ParseForm()
 
 		mu.Lock()

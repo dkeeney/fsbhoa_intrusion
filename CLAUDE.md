@@ -19,7 +19,7 @@ docker compose up -d              # start Mosquitto (1883) + Frigate (UI 5000/89
 docker compose restart frigate    # pick up frigate.yml edits
 ```
 
-**Testing without a phone call:** run the built binary from a scratch directory with its own `config.json` (`silent_mode: true`, a spare `listen_port`, and an unreachable `pbx_host`/`mqtt_host` such as 192.0.2.1), then query `/config`, `/weather-status` and `/logs`. `/test-alarm` always places a real call. In a `go test` file, log output only reaches `logBuf` if the test calls `log.SetOutput(&logBuf)`, because `main()` normally does that.
+**Testing without a phone call:** run the built binary from a scratch directory with its own `config.json` (`silent_mode: true`, a spare `listen_port`, and an unreachable `pbx_host`/`mqtt_host` such as 192.0.2.1), then query `/config`, `/weather-status` and `/logs` on 127.0.0.1 (POSTs need `-H 'Sec-Fetch-Site: same-origin'`). `/test-alarm` always places a real call. In a `go test` file, log output only reaches `logBuf` if the test calls `log.SetOutput(&logBuf)`, because `main()` normally does that.
 
 The binary reads and writes `config.json` in its **working directory**, so run it from the repo root. If the file is missing it writes defaults (hard-coded in `main()`). `config.json` is gitignored (it holds the WU API key); `config.example.json` mirrors the `main()` defaults, so keep the two in sync when adding a field.
 
@@ -57,5 +57,6 @@ The binary reads and writes `config.json` in its **working directory**, so run i
 - Before changing code, `git fetch`: production commits directly to GitHub `main`, so local `main` may be behind.
 - `main.go` is not `gofmt`-clean; avoid reformatting unrelated lines in a fix.
 - Frigate's unauthenticated API port 5000 is bound to 127.0.0.1 (the listener reads `/api/config` there). Users reach Frigate through Apache `https://alarm.fsbhoa.com:5001`, which proxies to Frigate's login port 8971 (self-signed, `SSLProxyVerify none`). The Frigate login is `admin`; its password is managed in Frigate's Settings → Users.
-- Mosquitto allows anonymous connections (`mosquitto.conf`). The config portal on 8090 has no login yet.
+- The config portal listens on 127.0.0.1 only; users reach it through Apache on 8090 with a Basic-auth login (`/etc/apache2/.htpasswd-alarm`, user `fsbhoa`; change with `sudo htpasswd /etc/apache2/.htpasswd-alarm fsbhoa`). State-changing endpoints (`/toggle-silent`, `/pause`, `/override`, `/resume`, `/test-alarm`, POST `/config`) are wrapped in `portalPost`/`fromPortal`: POST only, and rejected when `Sec-Fetch-Site` (or `Origin` versus `X-Forwarded-Host`) shows another site. Bookmarked GET links to them no longer work by design. No CORS headers.
+- Mosquitto allows anonymous connections (`mosquitto.conf`).
 - Camera RTSP passwords live only in the gitignored `.env` (loaded by `docker-compose.yml` via `env_file`); `frigate.yml` uses `{FRIGATE_CAM_PASSWORD_N}` placeholders. Never put a literal password back into `frigate.yml`. Old passwords remain in git history (the repo is public).
