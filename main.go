@@ -506,7 +506,8 @@ func processFrigateEvent(event FrigateEvent) {
 
 	var centerX, centerY, width, height float64
 	if len(event.After.Box) == 4 {
-		ymin, xmin, ymax, xmax := event.After.Box[0], event.After.Box[1], event.After.Box[2], event.After.Box[3]
+		// Frigate sends [x_min, y_min, x_max, y_max] in detect-resolution pixels
+		xmin, ymin, xmax, ymax := event.After.Box[0], event.After.Box[1], event.After.Box[2], event.After.Box[3]
 		centerX = xmin + (xmax-xmin)/2.0
 		centerY = ymin + (ymax-ymin)/2.0
 		width = xmax - xmin
