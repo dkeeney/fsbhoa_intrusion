@@ -84,6 +84,9 @@ cameras:
       motion:
         days: 3
     ffmpeg:
+      # Decode on the CPU: at night the GPU (VAAPI) failed to decode this HEVC stream about
+      # every 2 minutes ("Failed to sync surface"), 212 ffmpeg crashes on 2026-10-22/23
+      hwaccel_args: []
       inputs:
         # One connection for both roles: two copies of the 5 MP stream over the NanoBeam link
         # caused corrupt frames and ffmpeg (VAAPI) crashes
