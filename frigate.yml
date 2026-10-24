@@ -144,6 +144,14 @@ cameras:
       width: 2592
       height: 1944
       fps: 5
+    objects:
+      filters:
+        person:
+          # The bottom-right stone pillar: YOLOv9 saw a "person" there ~28 times on the night of
+          # 2026-10-23/24, with its box bottom at one of these two spots
+          mask:
+            - 0.86,0.70,0.95,0.70,0.95,0.77,0.86,0.77
+            - 0.82,0.97,0.89,0.97,0.89,1.0,0.82,1.0
 
   Pool_farside:
     enabled: true
